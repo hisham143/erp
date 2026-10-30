@@ -1,0 +1,20 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments and local package/download caches
+.venv/
+venv/
+.pip-temp/
+
+# Local business data and generated documents
+*.db
+*.db-shm
+*.db-wal
+INV-*.pdf
+
+# Build output
+build/
+dist/
+*.spec
