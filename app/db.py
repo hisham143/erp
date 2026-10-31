@@ -18,6 +18,74 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 class Base(DeclarativeBase):
     pass
 
+class Company(Base):
+    __tablename__ = "companies"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    legal_name: Mapped[str] = mapped_column(String(180), default="")
+    gstin: Mapped[str] = mapped_column(String(15), default="")
+    state_code: Mapped[str] = mapped_column(String(2), default="32")
+    address: Mapped[str] = mapped_column(Text, default="")
+    phone: Mapped[str] = mapped_column(String(30), default="")
+    email: Mapped[str] = mapped_column(String(180), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Branch(Base):
+    __tablename__ = "branches"
+    __table_args__ = (UniqueConstraint("company_id", "code", name="uq_branch_company_code"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    address: Mapped[str] = mapped_column(Text, default="")
+    phone: Mapped[str] = mapped_column(String(30), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Warehouse(Base):
+    __tablename__ = "warehouses"
+    __table_args__ = (UniqueConstraint("branch_id", "code", name="uq_warehouse_branch_code"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    address: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class UserCompanyAccess(Base):
+    __tablename__ = "user_company_access"
+    __table_args__ = (UniqueConstraint("user_id", "company_id", name="uq_user_company_access"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BranchAccess(Base):
+    __tablename__ = "branch_access"
+    __table_args__ = (UniqueConstraint("user_id", "branch_id", name="uq_user_branch_access"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
+
+
+class ProductStock(Base):
+    __tablename__ = "product_stock"
+    __table_args__ = (
+        UniqueConstraint("product_id", "warehouse_id", name="uq_product_stock_warehouse"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
+    reorder_level: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class BusinessSettings(Base):
     __tablename__ = "business_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
