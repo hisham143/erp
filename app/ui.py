@@ -791,7 +791,7 @@ class MainWindow(QMainWindow):
 
     def pay_supplier_purchase(self, purchase_id):
         with SessionLocal() as session:
-            purchase = session.scalar(select(Purchase).where(Purchase.company_id == self.user["company_id"]).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
+            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
             if not purchase: show_error(self, "Purchase not found."); return
             due = money(Decimal(str(purchase.grand_total)) - Decimal(str(purchase.amount_paid or 0)))
             number = purchase.purchase_number
@@ -839,7 +839,7 @@ class MainWindow(QMainWindow):
             elif entity_type == "supplier":
                 details = f"Name: {obj.name}\nGSTIN: {obj.gstin}\nState: {obj.state_code}\nPhone: {obj.phone}\nAddress: {obj.address}"
             else:
-                supplier = session.get(Supplier, obj.supplier_id)
+                supplier = session.scalar(select(Supplier).where(Supplier.id == obj.supplier_id, Supplier.company_id == self.user["company_id"]))
                 lines = list(session.scalars(select(PurchaseItem).where(PurchaseItem.purchase_id == obj.id)))
                 paid = Decimal(str(obj.amount_paid or 0)); due = Decimal(str(obj.grand_total or 0)) - paid
                 details = f"Purchase: {obj.purchase_number}\nDate: {obj.purchase_date:%d-%m-%Y}\nSupplier: {supplier.name if supplier else ''}\nSupplier invoice: {obj.supplier_invoice_number}\nTaxable: ₹{obj.taxable_total}\nTax: ₹{obj.tax_total}\nGrand total: ₹{obj.grand_total}\nPaid: ₹{paid:.2f}\nDue: ₹{due:.2f}"
@@ -933,15 +933,15 @@ class MainWindow(QMainWindow):
                 else: delta = Decimal("0")
                 for attr, value in updates.items(): setattr(obj, attr, value)
                 if entity_type == "product" and delta:
-                    session.add(StockMovement(product_id=obj.id, quantity_delta=delta, reason="stock_adjustment", reference="MANUAL-EDIT", created_by=self.user["username"]))
-                session.add(AuditLog(username=self.user["username"], action=f"{entity_type}_updated", entity_type=entity_type, entity_id=str(obj.id), details=f"Updated {entity_type} record"))
+                    session.add(StockMovement(company_id=self.user["company_id"], branch_id=self.user["branch_id"], warehouse_id=self.user["warehouse_id"], product_id=obj.id, quantity_delta=delta, reason="stock_adjustment", reference="MANUAL-EDIT", created_by=self.user["username"]))
+                session.add(AuditLog(company_id=self.user["company_id"], username=self.user["username"], action=f"{entity_type}_updated", entity_type=entity_type, entity_id=str(obj.id), details=f"Updated {entity_type} record"))
             self.refresh_customers(); self.refresh_products(); self.refresh_suppliers()
             self.refresh_invoice_options(); self.refresh_purchase_options(); self.refresh_dashboard()
         except Exception as exc: show_error(self, exc)
 
     def edit_purchase_record(self, purchase_id):
         with SessionLocal() as session:
-            purchase = session.scalar(select(Purchase).where(Purchase.company_id == self.user["company_id"]).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
+            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
             if not purchase:
                 QMessageBox.warning(self, "Not found", "Purchase not found."); return
             lines = list(session.scalars(select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id)))
