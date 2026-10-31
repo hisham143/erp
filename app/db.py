@@ -79,6 +79,7 @@ class ProductStock(Base):
         UniqueConstraint("product_id", "warehouse_id", name="uq_product_stock_warehouse"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
@@ -89,6 +90,7 @@ class ProductStock(Base):
 class BusinessSettings(Base):
     __tablename__ = "business_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     legal_name: Mapped[str] = mapped_column(String(180), default="Your Business Name")
     gstin: Mapped[str] = mapped_column(String(15), default="")
     state_code: Mapped[str] = mapped_column(String(2), default="32")
@@ -113,6 +115,7 @@ class User(Base):
 class Customer(Base):
     __tablename__ = "customers"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     gstin: Mapped[str] = mapped_column(String(15), default="")
     state_code: Mapped[str] = mapped_column(String(2), default="32")
@@ -125,6 +128,7 @@ class Customer(Base):
 class Product(Base):
     __tablename__ = "products"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     sku: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     hsn_sac: Mapped[str] = mapped_column(String(20), default="")
@@ -139,6 +143,9 @@ class Product(Base):
 class Invoice(Base):
     __tablename__ = "invoices"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), default=1, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), default=1, nullable=False)
     invoice_number: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
     invoice_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), nullable=False)
@@ -180,6 +187,7 @@ class InvoiceItem(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     method: Mapped[str] = mapped_column(String(30), default="UPI")
@@ -191,6 +199,7 @@ class Payment(Base):
 class Supplier(Base):
     __tablename__ = "suppliers"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     name: Mapped[str] = mapped_column(String(180), nullable=False)
     gstin: Mapped[str] = mapped_column(String(15), default="")
     state_code: Mapped[str] = mapped_column(String(2), default="32")
@@ -201,6 +210,9 @@ class Supplier(Base):
 class Purchase(Base):
     __tablename__ = "purchases"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), default=1, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), default=1, nullable=False)
     purchase_number: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
     supplier_invoice_number: Mapped[str] = mapped_column(String(80), default="")
@@ -217,6 +229,7 @@ class Purchase(Base):
 class SupplierPayment(Base):
     __tablename__ = "supplier_payments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     purchase_id: Mapped[int] = mapped_column(ForeignKey("purchases.id"), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     method: Mapped[str] = mapped_column(String(30), default="Bank transfer")
@@ -244,6 +257,9 @@ class PurchaseItem(Base):
 class StockMovement(Base):
     __tablename__ = "stock_movements"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), default=1, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), default=1, nullable=False)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
     quantity_delta: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     reason: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -254,6 +270,7 @@ class StockMovement(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), default=1, nullable=False)
     username: Mapped[str] = mapped_column(String(80), nullable=False)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(50), default="")
