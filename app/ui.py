@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy import select, func
 from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money
+from .access import get_accessible_contexts
 from .services import (
     add_customer, add_product, create_invoice,
     calculate_invoice_preview, record_payment,
@@ -269,12 +270,62 @@ class LoginDialog(QDialog):
 
     def try_login(self):
         with SessionLocal() as s:
-            u = s.scalar(select(User).where(User.username == self.username.text().strip(), User.active == True))
-            if u and verify_password(self.password.text(), u.password_hash):
-                self.user = {"username": u.username, "role": u.role}
-                self.accept()
-            else:
+            u = s.scalar(select(User).where(
+                User.username == self.username.text().strip(),
+                User.active.is_(True),
+            ))
+            if not u or not verify_password(self.password.text(), u.password_hash):
                 QMessageBox.warning(self, "Login failed", "Invalid username or password.")
+                return
+
+            contexts = get_accessible_contexts(s, u.id)
+            if not contexts:
+                QMessageBox.warning(
+                    self, "No access assigned",
+                    "This user has no active company, branch, and warehouse access. "
+                    "Ask an administrator to assign access.",
+                )
+                return
+
+            def choose_context_value(title, values, label):
+                unique = {}
+                for context in contexts:
+                    key = context[label]
+                    unique[str(key)] = context[label.replace("_name", "_id")]
+                labels = list(unique.keys())
+                if len(labels) == 1:
+                    return unique[labels[0]]
+                selected, ok = QInputDialog.getItem(self, title, title, labels, 0, False)
+                if not ok:
+                    return None
+                return unique[selected]
+
+            company_id = choose_context_value("Select Company", contexts, "company_name")
+            if company_id is None:
+                return
+            company_contexts = [x for x in contexts if x["company_id"] == company_id]
+            branch_id = choose_context_value("Select Branch", company_contexts, "branch_name")
+            if branch_id is None:
+                return
+            branch_contexts = [x for x in company_contexts if x["branch_id"] == branch_id]
+            warehouse_id = choose_context_value("Select Warehouse", branch_contexts, "warehouse_name")
+            if warehouse_id is None:
+                return
+            selected = next(
+                x for x in branch_contexts if x["warehouse_id"] == warehouse_id
+            )
+            self.user = {
+                "id": u.id,
+                "username": u.username,
+                "role": u.role,
+                "company_id": selected["company_id"],
+                "company_name": selected["company_name"],
+                "branch_id": selected["branch_id"],
+                "branch_name": selected["branch_name"],
+                "warehouse_id": selected["warehouse_id"],
+                "warehouse_name": selected["warehouse_name"],
+            }
+            self.accept()
 
 class SalesChart(QWidget):
     """Lightweight monthly sales chart drawn with Qt; no extra packages required."""
@@ -373,7 +424,10 @@ class MainWindow(QMainWindow):
 
         self.page_title = QLabel("Dashboard Overview")
         self.page_title.setObjectName("pageTitle")
-        user_label = QLabel(f"{self.user['username']}  ·  {self.user['role']}")
+        user_label = QLabel(
+            f"{self.user['username']}  ·  {self.user['role']}  ·  "
+            f"{self.user['company_name']} / {self.user['branch_name']} / {self.user['warehouse_name']}"
+        )
         user_label.setObjectName("userLabel")
         header_layout.addWidget(self.page_title)
         header_layout.addStretch()
