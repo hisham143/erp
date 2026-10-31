@@ -891,7 +891,10 @@ class MainWindow(QMainWindow):
         try:
             record_supplier_payment(purchase_id, dialog.amount.value(), dialog.method.currentText(),
                                     dialog.reference.text(), self.user["username"],
-                                    company_id=self.user["company_id"])
+                                    user_id=self.user["id"],
+                                    company_id=self.user["company_id"],
+                                    branch_id=self.user["branch_id"],
+                                    warehouse_id=self.user["warehouse_id"])
             self.refresh_purchases()
             self.refresh_suppliers()
             QMessageBox.information(self, "Payment recorded", f"Supplier payment for {number} recorded.")
@@ -1081,7 +1084,10 @@ class MainWindow(QMainWindow):
         try:
             update_purchase(purchase_id, supplier.currentData(), vendor_invoice.text(), updated_lines,
                             self.user["username"], purchase_date.date().toPython(),
-                            company_id=self.user["company_id"])
+                            user_id=self.user["id"],
+                            company_id=self.user["company_id"],
+                            branch_id=self.user["branch_id"],
+                            warehouse_id=self.user["warehouse_id"])
             self.refresh_purchases(); self.refresh_products(); self.refresh_suppliers(); self.refresh_dashboard()
         except Exception as exc: show_error(self, exc)
 
@@ -1223,7 +1229,10 @@ class MainWindow(QMainWindow):
                 self.c_phone.text().strip(),
                 self.c_email.text().strip(),
                 credit_limit=self.c_credit_limit.value(),
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
+                branch_id=self.user["branch_id"],
+                warehouse_id=self.user["warehouse_id"],
             )
 
             self.refresh_customers()
@@ -1417,6 +1426,7 @@ class MainWindow(QMainWindow):
                 self.p_gst.currentText(),
                 self.p_stock.value(),
                 self.p_reorder.value(),
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
                 branch_id=self.user["branch_id"],
                 warehouse_id=self.user["warehouse_id"],
@@ -1576,7 +1586,10 @@ class MainWindow(QMainWindow):
                 state,
                 self.sup_address.text().strip(),
                 self.sup_phone.text().strip(),
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
+                branch_id=self.user["branch_id"],
+                warehouse_id=self.user["warehouse_id"],
             )
 
             self.refresh_suppliers()
@@ -1846,6 +1859,7 @@ class MainWindow(QMainWindow):
                                         items=items, amount_paid=self.pur_paid.value(),
                                         payment_method=self.pur_method.currentText(),
                                         payment_reference=self.pur_reference.text(),
+                                        user_id=self.user["id"],
                                         company_id=self.user["company_id"],
                                         branch_id=self.user["branch_id"],
                                         warehouse_id=self.user["warehouse_id"])
@@ -2220,6 +2234,7 @@ class MainWindow(QMainWindow):
         try:
             preview = calculate_invoice_preview(
                 customer_id, lines,
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
                 branch_id=self.user["branch_id"],
                 warehouse_id=self.user["warehouse_id"],
@@ -2305,7 +2320,13 @@ class MainWindow(QMainWindow):
 
         try:
             # Recalculate and validate stock before confirming
-            preview = calculate_invoice_preview(customer_id, lines)
+            preview = calculate_invoice_preview(
+                customer_id, lines,
+                user_id=self.user["id"],
+                company_id=self.user["company_id"],
+                branch_id=self.user["branch_id"],
+                warehouse_id=self.user["warehouse_id"],
+            )
 
             # Currency is rounded to two decimal places
             paid = Decimal(str(self.i_payment.value())).quantize(
@@ -2392,6 +2413,7 @@ class MainWindow(QMainWindow):
                 self.i_method.currentText(),
                 self.i_reference.text().strip(),
                 allow_credit_override=allow_credit_override,
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
                 branch_id=self.user["branch_id"],
                 warehouse_id=self.user["warehouse_id"],
@@ -2938,7 +2960,10 @@ class MainWindow(QMainWindow):
                 dialog.method.currentText(),
                 dialog.reference.text().strip(),
                 self.user["username"],
+                user_id=self.user["id"],
                 company_id=self.user["company_id"],
+                branch_id=self.user["branch_id"],
+                warehouse_id=self.user["warehouse_id"],
             )
             self.refresh_invoice_register(); self.refresh_dashboard()
             QMessageBox.information(self, "Payment saved", "Payment recorded successfully.")
