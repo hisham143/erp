@@ -118,7 +118,8 @@ def _stock_row(session, product, warehouse_id, company_id):
     if row is None:
         row = ProductStock(
             product_id=product.id, warehouse_id=int(warehouse_id),
-            company_id=int(company_id), quantity=0, reorder_level=product.reorder_level or 0,
+            company_id=int(company_id), quantity=product.stock_qty or 0,
+            reorder_level=product.reorder_level or 0,
         )
         session.add(row)
         session.flush()
