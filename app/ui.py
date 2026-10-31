@@ -3033,7 +3033,11 @@ class MainWindow(QMainWindow):
 
     def reset_user_password(self, user_id):
         with SessionLocal() as s:
-            target = s.get(User, user_id)
+            target = s.scalar(
+                select(User)
+                .join(UserCompanyAccess, UserCompanyAccess.user_id == User.id)
+                .where(User.id == user_id, UserCompanyAccess.company_id == self.user["company_id"])
+            )
             if not target:
                 show_error(self, "User was not found."); return
             username = target.username
