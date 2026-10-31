@@ -3050,12 +3050,22 @@ class MainWindow(QMainWindow):
         if new != confirmation:
             show_error(self, "The new passwords do not match."); return
         with SessionLocal.begin() as s:
-            target = s.get(User, user_id)
+            target = s.scalar(
+                select(User)
+                .join(UserCompanyAccess, UserCompanyAccess.user_id == User.id)
+                .where(User.id == user_id, UserCompanyAccess.company_id == self.user["company_id"])
+            )
             if not target:
                 show_error(self, "User was not found."); return
             target.password_hash = hash_password(new)
-            s.add(AuditLog(username=self.user["username"], action="password_reset", entity_type="user",
-                           entity_id=str(target.id), details=f"Password reset for {target.username}"))
+            s.add(AuditLog(
+                company_id=self.user["company_id"],
+                username=self.user["username"],
+                action="password_reset",
+                entity_type="user",
+                entity_id=str(target.id),
+                details=f"Password reset for {target.username}",
+            ))
         QMessageBox.information(self, "Password updated", f"Password updated for {username}.")
 
     def refresh_users(self):
