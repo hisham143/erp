@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget, QLabel,
     QLineEdit, QPushButton, QMessageBox, QTableWidget, QTableWidgetItem,
-    QComboBox, QHeaderView, QAbstractItemView, QMessageBox
+    QComboBox, QHeaderView, QAbstractItemView
 )
 from sqlalchemy import select
 
