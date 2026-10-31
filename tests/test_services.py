@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import uuid4
 from sqlalchemy import select
 from app.db import init_db, SessionLocal, Customer, Product, BusinessSettings, Invoice, InvoiceItem
 from app.services import create_invoice
@@ -9,7 +10,7 @@ def test_intra_state_invoice_and_stock_deduction():
         settings = s.scalar(select(BusinessSettings).limit(1))
         settings.state_code = "32"
         customer = Customer(name="Pytest customer", state_code="32")
-        product = Product(sku="PYTEST-SKU", name="Pytest product", hsn_sac="1234",
+        product = Product(sku=f"PYTEST-{uuid4().hex[:12].upper()}", name="Pytest product", hsn_sac="1234",
                           unit="Nos", selling_price=Decimal("100.00"), purchase_price=Decimal("50.00"),
                           gst_rate=Decimal("18.00"), stock_qty=Decimal("10.000"), reorder_level=Decimal("1.000"))
         s.add_all([customer, product])
