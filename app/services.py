@@ -570,7 +570,9 @@ def record_payment(
     with SessionLocal.begin() as s:
         _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         inv = s.scalar(select(Invoice).where(
-            Invoice.id == int(invoice_id), Invoice.company_id == int(company_id)
+            Invoice.id == int(invoice_id),
+            Invoice.company_id == int(company_id),
+            Invoice.branch_id == int(branch_id)
         ))
         if not inv:
             raise ValueError("Invoice not found in this company.")
@@ -788,7 +790,9 @@ def record_supplier_payment(purchase_id, amount, method="Bank transfer", referen
     with SessionLocal.begin() as session:
         _authorize_user_context(session, user_id, company_id, branch_id, warehouse_id)
         purchase = session.scalar(select(Purchase).where(
-            Purchase.id == int(purchase_id), Purchase.company_id == int(company_id)
+            Purchase.id == int(purchase_id),
+            Purchase.company_id == int(company_id),
+            Purchase.branch_id == int(branch_id)
         ))
         if not purchase:
             raise ValueError("Purchase not found in this company.")
@@ -810,7 +814,9 @@ def update_purchase(purchase_id, supplier_id, supplier_invoice_number, items, us
     with SessionLocal.begin() as session:
         _authorize_user_context(session, user_id, company_id, branch_id, warehouse_id)
         purchase = session.scalar(select(Purchase).where(
-            Purchase.id == int(purchase_id), Purchase.company_id == int(company_id)
+            Purchase.id == int(purchase_id),
+            Purchase.company_id == int(company_id),
+            Purchase.branch_id == int(branch_id)
         ))
         supplier = _company_supplier(session, supplier_id, company_id)
         if not purchase:
