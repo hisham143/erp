@@ -53,6 +53,28 @@ def test_user_gets_only_assigned_active_context(session):
     assert contexts[0]["is_default_company"] is True
 
 
+def test_unassigned_company_is_not_listed(session):
+    db, user_id, company_id, branch_id, warehouse_id = session
+    other_company = Company(name="Other Company")
+    db.add(other_company)
+    db.flush()
+    other_branch = Branch(
+        company_id=other_company.id, name="Other Branch", code="OTHER"
+    )
+    db.add(other_branch)
+    db.flush()
+    db.add(Warehouse(
+        company_id=other_company.id,
+        branch_id=other_branch.id,
+        name="Other Warehouse",
+        code="OTHER",
+    ))
+    db.commit()
+
+    contexts = get_accessible_contexts(db, user_id)
+    assert {item["company_id"] for item in contexts} == {company_id}
+
+
 def test_unassigned_context_is_rejected(session):
     db, user_id, company_id, branch_id, warehouse_id = session
     with pytest.raises(PermissionError):
