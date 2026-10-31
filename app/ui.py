@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy import select, func
 from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
-from .access import get_accessible_contexts
+from .access import get_accessible_contexts, validate_user_context
 from .company_management import CompanyManagementPage
 from .services import (
     add_customer, add_product, create_invoice,
@@ -425,14 +425,16 @@ class MainWindow(QMainWindow):
 
         self.page_title = QLabel("Dashboard Overview")
         self.page_title.setObjectName("pageTitle")
-        user_label = QLabel(
-            f"{self.user['username']}  ·  {self.user['role']}  ·  "
-            f"{self.user['company_name']} / {self.user['branch_name']} / {self.user['warehouse_name']}"
-        )
-        user_label.setObjectName("userLabel")
+        self.user_label = QLabel()
+        self.user_label.setObjectName("userLabel")
+        self.update_user_label()
+        self.switch_context_button = QPushButton("Switch Company / Branch")
+        self.switch_context_button.setObjectName("secondaryButton")
+        self.switch_context_button.clicked.connect(self.switch_company_context)
         header_layout.addWidget(self.page_title)
         header_layout.addStretch()
-        header_layout.addWidget(user_label)
+        header_layout.addWidget(self.user_label)
+        header_layout.addWidget(self.switch_context_button)
         content_layout.addWidget(header)
 
         self.pages_stack = QStackedWidget()
@@ -528,6 +530,90 @@ class MainWindow(QMainWindow):
             #dashboardPanel { background: #FFFFFF; border: 1px solid #E5EAF2; border-radius: 10px; }
             QStatusBar { background: #FFFFFF; color: #64748B; }
         """)
+
+    def update_user_label(self):
+        self.user_label.setText(
+            f"{self.user['username']}  ·  {self.user['role']}  ·  "
+            f"{self.user['company_name']} / {self.user['branch_name']} / {self.user['warehouse_name']}"
+        )
+
+    def switch_company_context(self):
+        global _active_window
+
+        with SessionLocal() as session:
+            contexts = get_accessible_contexts(session, self.user["id"])
+
+        if not contexts:
+            QMessageBox.warning(
+                self, "No available contexts",
+                "No active company, branch, and warehouse access is assigned to this user."
+            )
+            return
+
+        choices = {}
+        for context in contexts:
+            label = (
+                f"{context['company_name']}  /  {context['branch_name']}  /  "
+                f"{context['warehouse_name']}  "
+                f"(C{context['company_id']}-B{context['branch_id']}-W{context['warehouse_id']})"
+            )
+            choices[label] = context
+
+        labels = list(choices)
+        current_label = next(
+            (
+                label for label, context in choices.items()
+                if context["company_id"] == self.user["company_id"]
+                and context["branch_id"] == self.user["branch_id"]
+                and context["warehouse_id"] == self.user["warehouse_id"]
+            ),
+            labels[0],
+        )
+        if len(labels) == 1:
+            QMessageBox.information(
+                self, "Only one context available",
+                "This user currently has access to only one company, branch, and warehouse."
+            )
+            return
+
+        selected_label, ok = QInputDialog.getItem(
+            self,
+            "Switch Working Context",
+            "Select an assigned company / branch / warehouse:",
+            labels,
+            labels.index(current_label),
+            False,
+        )
+        if not ok or not selected_label:
+            return
+
+        selected = choices[selected_label]
+        try:
+            with SessionLocal() as session:
+                validated = validate_user_context(
+                    session,
+                    self.user["id"],
+                    selected["company_id"],
+                    selected["branch_id"],
+                    selected["warehouse_id"],
+                )
+        except Exception as exc:
+            show_error(self, exc)
+            return
+
+        if (
+            validated["company_id"] == self.user["company_id"]
+            and validated["branch_id"] == self.user["branch_id"]
+            and validated["warehouse_id"] == self.user["warehouse_id"]
+        ):
+            return
+
+        new_user = dict(self.user)
+        new_user.update(validated)
+        new_window = MainWindow(new_user)
+        _active_window = new_window
+        new_window.show()
+        self.close()
 
     def change_page(self, index):
         if index < 0 or index >= self.pages_stack.count():
