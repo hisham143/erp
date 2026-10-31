@@ -154,10 +154,13 @@ def add_customer(
     email="",
     credit_limit="10000",
     *,
-    company_id=1,
+    user_id,
+    company_id,
+    branch_id,
+    warehouse_id,
 ):
     with SessionLocal.begin() as s:
-        _company_context(s, company_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         obj = Customer(
             company_id=int(company_id),
             name=name.strip(),
@@ -196,12 +199,13 @@ def add_product(
     opening_stock="0",
     reorder_level="0",
     *,
-    company_id=1,
-    branch_id=1,
-    warehouse_id=1,
+    user_id,
+    company_id,
+    branch_id,
+    warehouse_id,
 ):
     with SessionLocal.begin() as s:
-        _company_context(s, company_id, branch_id, warehouse_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         obj = Product(
             company_id=int(company_id),
             sku=sku.strip(),
@@ -359,11 +363,11 @@ def _prepare_invoice_preview(
     }
 
 
-def calculate_invoice_preview(customer_id, line_items, *, company_id=1, branch_id=1, warehouse_id=1):
+def calculate_invoice_preview(customer_id, line_items, *, user_id, company_id, branch_id, warehouse_id):
     """Calculate invoice totals without saving an invoice."""
 
     with SessionLocal() as s:
-        _company_context(s, company_id, branch_id, warehouse_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         settings = _company_settings(s, company_id)
         customer = _company_customer(s, customer_id, company_id)
 
@@ -386,9 +390,10 @@ def create_invoice(
     payment_reference="",
     allow_credit_override=False,
     *,
-    company_id=1,
-    branch_id=1,
-    warehouse_id=1,
+    user_id,
+    company_id,
+    branch_id,
+    warehouse_id,
 ):
     """
     Create an invoice and update stock.
@@ -410,7 +415,7 @@ def create_invoice(
         raise ValueError("Add at least one product.")
 
     with SessionLocal.begin() as s:
-        _company_context(s, company_id, branch_id, warehouse_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         settings = _company_settings(s, company_id)
         customer = _company_customer(s, customer_id, company_id)
 
@@ -550,7 +555,10 @@ def record_payment(
     reference="",
     username="admin",
     *,
-    company_id=1,
+    user_id,
+    branch_id,
+    warehouse_id,
+    company_id,
 ):
     amount = money(amount)
 
@@ -560,6 +568,7 @@ def record_payment(
         )
 
     with SessionLocal.begin() as s:
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         inv = s.scalar(select(Invoice).where(
             Invoice.id == int(invoice_id), Invoice.company_id == int(company_id)
         ))
@@ -612,7 +621,10 @@ def add_supplier(
     address="",
     phone="",
     *,
-    company_id=1,
+    user_id,
+    branch_id,
+    warehouse_id,
+    company_id,
 ):
     if not name.strip() or len(state_code.strip()) != 2:
         raise ValueError(
@@ -620,7 +632,7 @@ def add_supplier(
         )
 
     with SessionLocal.begin() as s:
-        _company_context(s, company_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         obj = Supplier(
             company_id=int(company_id),
             name=name.strip(),
@@ -659,9 +671,10 @@ def record_purchase(
     amount_paid=0,
     payment_method="Bank transfer",
     payment_reference="",
-    company_id=1,
-    branch_id=1,
-    warehouse_id=1,
+    user_id,
+    company_id,
+    branch_id,
+    warehouse_id,
 ):
     if items is None:
         items = [{"product_id": product_id, "quantity": quantity, "unit_cost": unit_cost}]
@@ -669,7 +682,7 @@ def record_purchase(
         raise ValueError("Add at least one product to this purchase.")
 
     with SessionLocal.begin() as s:
-        _company_context(s, company_id, branch_id, warehouse_id)
+        _authorize_user_context(s, user_id, company_id, branch_id, warehouse_id)
         supplier = _company_supplier(s, supplier_id, company_id)
 
         prepared = []
@@ -768,11 +781,12 @@ def record_purchase(
         return purchase.id, purchase_number
 
 
-def record_supplier_payment(purchase_id, amount, method="Bank transfer", reference="", username="admin", *, company_id=1):
+def record_supplier_payment(purchase_id, amount, method="Bank transfer", reference="", username="admin", *, user_id, company_id, branch_id, warehouse_id):
     amount = money(amount)
     if amount <= 0:
         raise ValueError("Payment must be greater than zero.")
     with SessionLocal.begin() as session:
+        _authorize_user_context(session, user_id, company_id, branch_id, warehouse_id)
         purchase = session.scalar(select(Purchase).where(
             Purchase.id == int(purchase_id), Purchase.company_id == int(company_id)
         ))
@@ -790,10 +804,11 @@ def record_supplier_payment(purchase_id, amount, method="Bank transfer", referen
         return purchase.amount_paid, money(Decimal(str(purchase.grand_total)) - Decimal(str(purchase.amount_paid)))
 
 
-def update_purchase(purchase_id, supplier_id, supplier_invoice_number, items, username="admin", purchase_date=None, *, company_id=1):
+def update_purchase(purchase_id, supplier_id, supplier_invoice_number, items, username="admin", purchase_date=None, *, user_id, company_id, branch_id, warehouse_id):
     if not items:
         raise ValueError("Add at least one product to this purchase.")
     with SessionLocal.begin() as session:
+        _authorize_user_context(session, user_id, company_id, branch_id, warehouse_id)
         purchase = session.scalar(select(Purchase).where(
             Purchase.id == int(purchase_id), Purchase.company_id == int(company_id)
         ))
