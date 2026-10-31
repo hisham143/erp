@@ -22,10 +22,12 @@ from .db import (
     Company,
     Branch,
     Warehouse,
+    User,
     money,
     qty,
 )
 
+from .access import validate_user_context
 
 def round_money(value):
     return Decimal(str(value)).quantize(
@@ -52,6 +54,23 @@ def audit(
             details=details,
             company_id=company_id,
         )
+    )
+
+
+
+def _authorize_user_context(session, user_id, company_id, branch_id, warehouse_id):
+    """Require an active user and an explicitly assigned active ERP context."""
+    if user_id is None:
+        raise PermissionError("A signed-in user is required for this operation.")
+    user = session.get(User, int(user_id))
+    if not user or not user.active:
+        raise PermissionError("This user account is unavailable or inactive.")
+    return validate_user_context(
+        session,
+        int(user_id),
+        int(company_id),
+        int(branch_id),
+        int(warehouse_id),
     )
 
 
