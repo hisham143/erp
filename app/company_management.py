@@ -3,10 +3,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget, QLabel,
     QLineEdit, QPushButton, QMessageBox, QTableWidget, QTableWidgetItem,
-    QComboBox, QHeaderView, QAbstractItemView
+    QComboBox, QHeaderView, QAbstractItemView, QMessageBox
 )
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from .db import (
     SessionLocal, Company, Branch, Warehouse, User, UserCompanyAccess,
