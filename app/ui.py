@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy import select, func
 from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
 from .access import get_accessible_contexts
+from .company_management import CompanyManagementPage
 from .services import (
     add_customer, add_product, create_invoice,
     calculate_invoice_preview, record_payment,
@@ -451,6 +452,8 @@ class MainWindow(QMainWindow):
         if user["role"] == "admin":
             page_specs.extend([
                 ("♙   Users", "User Management", self.users_tab),
+                ("🏢   Company Management", "Company & Access Management",
+                 lambda: CompanyManagementPage(self.user)),
                 ("⚙   Business Settings", "Business Settings", self.settings_tab),
             ])
 
