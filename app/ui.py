@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QFrame, QApplication, QScrollArea, QSizePolicy
 )
 from sqlalchemy import select, func
-from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money
+from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
 from .access import get_accessible_contexts
 from .services import (
     add_customer, add_product, create_invoice,
@@ -2979,8 +2979,34 @@ class MainWindow(QMainWindow):
             with SessionLocal.begin() as s:
                 if s.scalar(select(User.id).where(User.username == username)):
                     show_error(self, "That username already exists. Choose a different username."); return
-                s.add(User(username=username, password_hash=hash_password(password),
-                           role=self.u_role.currentText(), active=True))
+                new_user = User(
+                    username=username,
+                    password_hash=hash_password(password),
+                    role=self.u_role.currentText(),
+                    active=True,
+                )
+                s.add(new_user)
+                s.flush()
+                # New accounts receive only the company and branch currently
+                # selected by the administrator. Additional access is granted
+                # explicitly through a future access-management screen.
+                s.add(UserCompanyAccess(
+                    user_id=new_user.id,
+                    company_id=self.user["company_id"],
+                    is_default=True,
+                ))
+                s.add(BranchAccess(
+                    user_id=new_user.id,
+                    branch_id=self.user["branch_id"],
+                ))
+                s.add(AuditLog(
+                    company_id=self.user["company_id"],
+                    username=self.user["username"],
+                    action="user_created",
+                    entity_type="user",
+                    entity_id=str(new_user.id),
+                    details=f"Created {new_user.username} with access to current company and branch",
+                ))
             username_created = username
             self.refresh_users()
             self._user_create_dialog.accept()
@@ -3030,7 +3056,12 @@ class MainWindow(QMainWindow):
 
     def refresh_users(self):
         with SessionLocal() as s:
-            rows = list(s.scalars(select(User).order_by(User.username)))
+            rows = list(s.scalars(
+                select(User)
+                .join(UserCompanyAccess, UserCompanyAccess.user_id == User.id)
+                .where(UserCompanyAccess.company_id == self.user["company_id"])
+                .order_by(User.username)
+            ))
             self.user_table.setRowCount(len(rows))
             for r, u in enumerate(rows):
                 for col, val in enumerate([u.username, u.role.title(), "Active" if u.active else "Inactive"]):
