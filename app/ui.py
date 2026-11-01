@@ -17,13 +17,13 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QFrame, QApplication, QScrollArea, QSizePolicy
 )
 from sqlalchemy import select, func
-from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, ProductStock, Warehouse, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
+from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, ProductStock, Warehouse, StockTransfer, StockTransferItem, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
 from .access import get_accessible_contexts, validate_user_context
 from .company_management import CompanyManagementPage
 from .services import (
     add_customer, add_product, create_invoice,
     calculate_invoice_preview, record_payment,
-    add_supplier, record_purchase, update_purchase, record_supplier_payment, _stock_row
+    add_supplier, record_purchase, update_purchase, record_supplier_payment, _stock_row, transfer_stock
 )
 from .pdf_invoice import generate_invoice_pdf, generate_thermal_receipt
 from .purchase_ocr import read_bill_text, suggest_purchase_fields
@@ -451,6 +451,7 @@ class MainWindow(QMainWindow):
             ("▦   Dashboard", "Dashboard Overview", self.dashboard_tab),
             ("♙   Customers", "Customers & Parties", self.customers_tab),
             ("▣   Products & Stock", "Products & Stock", self.products_tab),
+            ("⇄   Stock Transfers", "Warehouse Stock Transfers", self.stock_transfers_tab),
             ("♧   Suppliers", "Supplier Management", self.suppliers_tab),
             ("↓   Purchases / Stock In", "Purchases & Stock In", self.purchases_tab),
             ("▤   Invoices", "Invoices", self.invoice_workspace_tab),
@@ -1524,6 +1525,229 @@ class MainWindow(QMainWindow):
                 self.product_metric_labels["value"].setText(f"₹{stock_value:,.2f}")
         if hasattr(self, "product_search"):
             self._filter_table(self.product_table, self.product_search.text(), (1, 2))
+
+
+    def stock_transfers_tab(self):
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
+
+        title = QLabel("Warehouse Stock Transfers")
+        title.setStyleSheet("font-size:24px;font-weight:700;color:#172033;")
+        subtitle = QLabel(
+            "Move inventory between warehouses in this branch. Transfers update both "
+            "warehouse balances and create paired stock movement records."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#64748B;font-size:12px;")
+        root.addWidget(title)
+        root.addWidget(subtitle)
+
+        form_box = QFrame()
+        form_box.setObjectName("card")
+        form = QFormLayout(form_box)
+        self.transfer_source_label = QLabel(
+            self.user.get("warehouse_name", f"Warehouse {self.user['warehouse_id']}")
+        )
+        self.transfer_destination = QComboBox()
+        self.transfer_product = QComboBox()
+        self.transfer_quantity = QDoubleSpinBox()
+        self.transfer_quantity.setRange(0.001, 999999999)
+        self.transfer_quantity.setDecimals(3)
+        self.transfer_quantity.setValue(1)
+        self.transfer_note = QLineEdit()
+        self.transfer_note.setPlaceholderText("Optional transfer note / reason")
+        form.addRow("From warehouse", self.transfer_source_label)
+        form.addRow("To warehouse", self.transfer_destination)
+        form.addRow("Product", self.transfer_product)
+        form.addRow("Quantity", self.transfer_quantity)
+        form.addRow("Note", self.transfer_note)
+        root.addWidget(form_box)
+
+        line_controls = QHBoxLayout()
+        add_line = QPushButton("＋ Add Product")
+        add_line.clicked.connect(self.add_stock_transfer_line)
+        remove_line = QPushButton("Remove Selected")
+        remove_line.clicked.connect(self.remove_stock_transfer_line)
+        line_controls.addWidget(add_line)
+        line_controls.addWidget(remove_line)
+        line_controls.addStretch()
+        root.addLayout(line_controls)
+
+        self.transfer_items_table = QTableWidget(0, 4)
+        self.transfer_items_table.setHorizontalHeaderLabels(
+            ["Product ID", "SKU", "Product", "Quantity"]
+        )
+        self.transfer_items_table.setColumnHidden(0, True)
+        self.transfer_items_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
+        )
+        self.transfer_items_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.transfer_items_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.transfer_items_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        root.addWidget(self.transfer_items_table)
+
+        submit = QPushButton("Transfer Stock")
+        submit.setMinimumHeight(42)
+        submit.clicked.connect(self.submit_stock_transfer)
+        root.addWidget(submit)
+
+        history_title = QLabel("Recent Transfers")
+        history_title.setStyleSheet("font-size:18px;font-weight:700;color:#172033;")
+        root.addWidget(history_title)
+        self.transfer_history_table = QTableWidget(0, 6)
+        self.transfer_history_table.setHorizontalHeaderLabels(
+            ["Transfer No.", "Date", "From", "To", "Products", "Created By"]
+        )
+        self.transfer_history_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self.transfer_history_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
+        )
+        self.transfer_history_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Stretch
+        )
+        self.transfer_history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        root.addWidget(self.transfer_history_table)
+
+        self.refresh_stock_transfer_options()
+        self.refresh_stock_transfer_history()
+        return page
+
+    def refresh_stock_transfer_options(self):
+        self.transfer_destination.clear()
+        self.transfer_product.clear()
+        with SessionLocal() as session:
+            warehouses = session.scalars(
+                select(Warehouse).where(
+                    Warehouse.company_id == self.user["company_id"],
+                    Warehouse.branch_id == self.user["branch_id"],
+                    Warehouse.active.is_(True),
+                    Warehouse.id != self.user["warehouse_id"],
+                ).order_by(Warehouse.name)
+            ).all()
+            for warehouse in warehouses:
+                self.transfer_destination.addItem(warehouse.name, warehouse.id)
+            products = session.scalars(
+                select(Product).where(
+                    Product.company_id == self.user["company_id"],
+                    Product.active.is_(True),
+                ).order_by(Product.name)
+            ).all()
+            for product in products:
+                self.transfer_product.addItem(
+                    f"{product.sku} — {product.name}", product.id
+                )
+
+    def add_stock_transfer_line(self):
+        product_id = self.transfer_product.currentData()
+        if product_id is None:
+            QMessageBox.warning(self, "Select product", "Choose a product first.")
+            return
+        quantity = Decimal(str(self.transfer_quantity.value())).quantize(
+            Decimal("0.001")
+        )
+        for row in range(self.transfer_items_table.rowCount()):
+            if int(self.transfer_items_table.item(row, 0).text()) == int(product_id):
+                existing = Decimal(self.transfer_items_table.item(row, 3).text())
+                self.transfer_items_table.item(row, 3).setText(
+                    f"{existing + quantity:.3f}"
+                )
+                return
+        with SessionLocal() as session:
+            product = session.scalar(select(Product).where(
+                Product.id == int(product_id),
+                Product.company_id == self.user["company_id"],
+            ))
+            if not product:
+                QMessageBox.warning(self, "Product unavailable", "Selected product is unavailable.")
+                return
+            row = self.transfer_items_table.rowCount()
+            self.transfer_items_table.insertRow(row)
+            values = [str(product.id), product.sku, product.name, f"{quantity:.3f}"]
+            for column, value in enumerate(values):
+                self.transfer_items_table.setItem(row, column, QTableWidgetItem(value))
+
+    def remove_stock_transfer_line(self):
+        row = self.transfer_items_table.currentRow()
+        if row >= 0:
+            self.transfer_items_table.removeRow(row)
+
+    def submit_stock_transfer(self):
+        destination_id = self.transfer_destination.currentData()
+        if destination_id is None:
+            QMessageBox.warning(
+                self, "Destination required",
+                "Create another active warehouse in this branch before transferring stock.",
+            )
+            return
+        lines = []
+        for row in range(self.transfer_items_table.rowCount()):
+            lines.append({
+                "product_id": int(self.transfer_items_table.item(row, 0).text()),
+                "quantity": self.transfer_items_table.item(row, 3).text(),
+            })
+        if not lines:
+            QMessageBox.warning(self, "No products", "Add at least one product to transfer.")
+            return
+        try:
+            transfer_id, transfer_number = transfer_stock(
+                lines,
+                destination_id,
+                self.transfer_note.text(),
+                self.user["username"],
+                user_id=self.user["id"],
+                company_id=self.user["company_id"],
+                branch_id=self.user["branch_id"],
+                warehouse_id=self.user["warehouse_id"],
+            )
+            self.transfer_items_table.setRowCount(0)
+            self.transfer_note.clear()
+            self.refresh_stock_transfer_history()
+            self.refresh_products()
+            self.refresh_dashboard()
+            self.refresh_invoice_options()
+            QMessageBox.information(
+                self, "Stock transferred",
+                f"Transfer {transfer_number} completed successfully.",
+            )
+        except Exception as exc:
+            show_error(self, exc)
+
+    def refresh_stock_transfer_history(self):
+        with SessionLocal() as session:
+            transfers = session.scalars(
+                select(StockTransfer).where(
+                    StockTransfer.company_id == self.user["company_id"],
+                    StockTransfer.branch_id == self.user["branch_id"],
+                ).order_by(StockTransfer.created_at.desc()).limit(100)
+            ).all()
+            self.transfer_history_table.setRowCount(len(transfers))
+            warehouse_ids = {
+                warehouse.id: warehouse.name
+                for warehouse in session.scalars(select(Warehouse).where(
+                    Warehouse.company_id == self.user["company_id"],
+                    Warehouse.branch_id == self.user["branch_id"],
+                ))
+            }
+            for row, transfer in enumerate(transfers):
+                count = session.scalar(select(func.count()).select_from(
+                    StockTransferItem
+                ).where(StockTransferItem.transfer_id == transfer.id)) or 0
+                values = [
+                    transfer.transfer_number,
+                    transfer.created_at.strftime("%d-%m-%Y %H:%M") if transfer.created_at else "",
+                    warehouse_ids.get(transfer.from_warehouse_id, "—"),
+                    warehouse_ids.get(transfer.to_warehouse_id, "—"),
+                    str(count),
+                    transfer.created_by,
+                ]
+                for column, value in enumerate(values):
+                    self.transfer_history_table.setItem(
+                        row, column, QTableWidgetItem(value)
+                    )
 
     def suppliers_tab(self):
         w = QWidget()
