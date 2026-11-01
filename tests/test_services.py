@@ -44,10 +44,6 @@ def test_intra_state_invoice_and_stock_deduction(monkeypatch):
         settings = session.scalar(
             select(BusinessSettings).where(BusinessSettings.company_id == 1).limit(1)
         )
-        settings.company_id = company.id
-        settings = session.scalar(
-            select(BusinessSettings).where(BusinessSettings.company_id == 1).limit(1)
-        )
         settings.state_code = "32"
 
         # Ensure the seeded admin has explicit access to the migrated
