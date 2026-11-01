@@ -4,9 +4,8 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import create_engine, pool
-from sqlalchemy.engine import URL
 
-from app.db import Base, DB_PATH
+from app.db import Base
 from app.saas.config import get_database_url as get_app_database_url
 
 config = context.config
