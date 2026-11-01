@@ -129,15 +129,34 @@ def _company_supplier(session, supplier_id, company_id):
 
 
 def _stock_row(session, product, warehouse_id, company_id):
+    """Get stock for one warehouse without copying legacy stock to every warehouse.
+
+    Before warehouse inventory existed, Product.stock_qty held one company-wide
+    balance. Preserve that balance in the company's first (default) warehouse
+    only. Additional warehouses start at zero.
+    """
+    warehouse_id = int(warehouse_id)
+    company_id = int(company_id)
     row = session.scalar(select(ProductStock).where(
         ProductStock.product_id == product.id,
-        ProductStock.warehouse_id == int(warehouse_id),
-        ProductStock.company_id == int(company_id),
+        ProductStock.warehouse_id == warehouse_id,
+        ProductStock.company_id == company_id,
     ))
     if row is None:
+        default_warehouse_id = session.scalar(
+            select(Warehouse.id)
+            .where(Warehouse.company_id == company_id)
+            .order_by(Warehouse.id)
+            .limit(1)
+        )
+        opening_balance = (
+            product.stock_qty or 0
+            if warehouse_id == default_warehouse_id
+            else 0
+        )
         row = ProductStock(
-            product_id=product.id, warehouse_id=int(warehouse_id),
-            company_id=int(company_id), quantity=product.stock_qty or 0,
+            product_id=product.id, warehouse_id=warehouse_id,
+            company_id=company_id, quantity=opening_balance,
             reorder_level=product.reorder_level or 0,
         )
         session.add(row)
@@ -503,7 +522,6 @@ def create_invoice(
 
             stock = _stock_row(s, product, warehouse_id, company_id)
             stock.quantity = qty(stock.quantity - quantity)
-            product.stock_qty = qty(product.stock_qty - quantity)
 
             s.add(
                 StockMovement(
@@ -758,7 +776,6 @@ def record_purchase(
             ))
             stock = _stock_row(s, line_product, warehouse_id, company_id)
             stock.quantity = qty(stock.quantity + line_qty)
-            line_product.stock_qty = qty(line_product.stock_qty + line_qty)
             line_product.purchase_price = line_cost
             s.add(StockMovement(company_id=int(company_id), branch_id=int(branch_id),
                                 warehouse_id=int(warehouse_id), product_id=line_product.id,
@@ -849,7 +866,6 @@ def update_purchase(purchase_id, supplier_id, supplier_invoice_number, items, us
             if Decimal(str(stock.quantity)) + delta < 0:
                 raise ValueError(f"Cannot reduce this purchase: stock for {product.name} has already been sold or adjusted.")
             stock.quantity = qty(Decimal(str(stock.quantity)) + delta)
-            product.stock_qty = qty(Decimal(str(product.stock_qty)) + delta)
             session.add(StockMovement(company_id=int(company_id), branch_id=purchase.branch_id,
                                       warehouse_id=purchase.warehouse_id, product_id=product_id,
                                       quantity_delta=delta, reason="purchase_edit",
