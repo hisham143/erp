@@ -234,7 +234,7 @@ def add_product(
             selling_price=money(selling_price),
             purchase_price=money(purchase_price),
             gst_rate=money(gst_rate),
-            stock_qty=qty(opening_stock),
+            stock_qty=qty(0),  # Legacy field retained only for pre-warehouse products.
             reorder_level=qty(reorder_level),
         )
 
