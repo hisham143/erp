@@ -12,7 +12,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 APP_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = APP_DIR / "gst_billing.db"
-engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}", future=True)
+
+# Desktop installations keep using the existing local SQLite database by
+# default. Cloud deployments set ERP_DATABASE_URL to PostgreSQL.
+from .saas.config import get_database_url, engine_options
+
+DATABASE_URL = get_database_url()
+engine = create_engine(DATABASE_URL, **engine_options(DATABASE_URL))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 class Base(DeclarativeBase):
