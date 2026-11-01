@@ -37,6 +37,37 @@ This is a software starter, not tax/legal advice or a certified GST compliance p
    - Password: `ChangeMe123!`
 5. Change the default password immediately from the Users tab before entering real business data.
 
+## SaaS API foundation (development only)
+
+The repository is beginning a separate cloud API alongside the existing Windows desktop application.
+
+Install the expanded dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Run the local API:
+
+```powershell
+uvicorn app.saas.api:app --host 127.0.0.1 --port 8000
+```
+
+Check process and database readiness:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health/live
+Invoke-RestMethod http://127.0.0.1:8000/health/ready
+```
+
+The desktop app continues to use the existing local SQLite database by default. Cloud development can set ERP_DATABASE_URL to a PostgreSQL URL using the Psycopg 3 driver, for example:
+
+```powershell
+$env:ERP_DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE"
+```
+
+Do not use a production database URL yet. The API currently exposes health endpoints only; tenant authentication, authorization, SaaS migrations, backups, and production deployment gates are still under development. See docs/saas-product-blueprint.md and docs/saas-phase-1.md.
+
 ## Database
 - Database file: `gst_billing.db` in the application folder.
 - Schema is defined in `app/db.py` and created on first launch.
