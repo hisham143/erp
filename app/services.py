@@ -19,6 +19,8 @@ from .db import (
     PurchaseItem,
     SupplierPayment,
     ProductStock,
+    StockTransfer,
+    StockTransferItem,
     Company,
     Branch,
     Warehouse,
@@ -888,3 +890,108 @@ def update_purchase(purchase_id, supplier_id, supplier_invoice_number, items, us
             product.purchase_price = unit_cost
         audit(session, username, "purchase_updated", "purchase", purchase.id,
               f"Purchase updated with {len(prepared)} product lines", company_id=company_id)
+
+def transfer_stock(
+    items,
+    to_warehouse_id,
+    note="",
+    username="admin",
+    *,
+    user_id,
+    company_id,
+    branch_id,
+    warehouse_id,
+):
+    """Move stock atomically between warehouses in the selected branch."""
+    if not items:
+        raise ValueError("Add at least one product to transfer.")
+
+    with SessionLocal.begin() as session:
+        _authorize_user_context(
+            session, user_id, company_id, branch_id, warehouse_id
+        )
+        source_id = int(warehouse_id)
+        destination_id = int(to_warehouse_id)
+        if source_id == destination_id:
+            raise ValueError("Source and destination warehouses must be different.")
+
+        _company_context(
+            session, company_id, branch_id=branch_id,
+            warehouse_id=destination_id,
+        )
+        source = session.get(Warehouse, source_id)
+        destination = session.get(Warehouse, destination_id)
+        if not source or not source.active or source.company_id != int(company_id) or source.branch_id != int(branch_id):
+            raise ValueError("Source warehouse is not available in the selected branch.")
+        if not destination or not destination.active or destination.company_id != int(company_id) or destination.branch_id != int(branch_id):
+            raise ValueError("Destination warehouse must be active in the selected branch.")
+
+        quantities = {}
+        for item in items:
+            product_id = int(item["product_id"])
+            quantity = qty(item["quantity"])
+            if quantity <= 0:
+                raise ValueError("Transfer quantities must be greater than zero.")
+            quantities[product_id] = quantities.get(product_id, Decimal("0")) + quantity
+
+        prepared = []
+        for product_id, quantity in quantities.items():
+            product = _company_product(session, product_id, company_id)
+            source_stock = _stock_row(session, product, source_id, company_id)
+            if Decimal(str(source_stock.quantity or 0)) < quantity:
+                raise ValueError(
+                    f"Insufficient stock for {product.name}. "
+                    f"Available: {source_stock.quantity}, requested: {quantity}"
+                )
+            destination_stock = _stock_row(
+                session, product, destination_id, company_id
+            )
+            prepared.append((product, quantity, source_stock, destination_stock))
+
+        transfer = StockTransfer(
+            company_id=int(company_id),
+            branch_id=int(branch_id),
+            from_warehouse_id=source_id,
+            to_warehouse_id=destination_id,
+            transfer_number="PENDING",
+            note=(note or "").strip(),
+            created_by=username,
+        )
+        session.add(transfer)
+        session.flush()
+        transfer.transfer_number = f"TRF-{int(company_id)}-{transfer.id:06d}"
+
+        for product, quantity, source_stock, destination_stock in prepared:
+            source_stock.quantity = qty(Decimal(str(source_stock.quantity)) - quantity)
+            destination_stock.quantity = qty(Decimal(str(destination_stock.quantity)) + quantity)
+            session.add(StockTransferItem(
+                transfer_id=transfer.id,
+                product_id=product.id,
+                quantity=quantity,
+            ))
+            session.add_all([
+                StockMovement(
+                    company_id=int(company_id), branch_id=int(branch_id),
+                    warehouse_id=source_id, product_id=product.id,
+                    quantity_delta=-quantity, reason="transfer_out",
+                    reference=transfer.transfer_number, created_by=username,
+                ),
+                StockMovement(
+                    company_id=int(company_id), branch_id=int(branch_id),
+                    warehouse_id=destination_id, product_id=product.id,
+                    quantity_delta=quantity, reason="transfer_in",
+                    reference=transfer.transfer_number, created_by=username,
+                ),
+            ])
+
+        audit(
+            session, username, "stock_transfer_created",
+            entity_type="stock_transfer", entity_id=transfer.id,
+            details=(
+                f"{transfer.transfer_number}: warehouse {source_id} -> "
+                f"warehouse {destination_id}; {len(prepared)} product(s)"
+            ),
+            company_id=company_id,
+        )
+        return transfer.id, transfer.transfer_number
+
