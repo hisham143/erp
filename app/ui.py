@@ -1061,6 +1061,8 @@ class MainWindow(QMainWindow):
                 else:
                     delta = Decimal("0")
                 for attr, value in updates.items(): setattr(obj, attr, value)
+                if entity_type == "product":
+                    stock.reorder_level = Decimal(str(obj.reorder_level or 0))
                 if entity_type == "product" and delta:
                     session.add(StockMovement(company_id=self.user["company_id"], branch_id=self.user["branch_id"], warehouse_id=self.user["warehouse_id"], product_id=obj.id, quantity_delta=delta, reason="stock_adjustment", reference="MANUAL-EDIT", created_by=self.user["username"]))
                 session.add(AuditLog(company_id=self.user["company_id"], username=self.user["username"], action=f"{entity_type}_updated", entity_type=entity_type, entity_id=str(obj.id), details=f"Updated {entity_type} record"))
@@ -1319,7 +1321,8 @@ class MainWindow(QMainWindow):
 
         self.product_table = QTableWidget(0, 8)
         self.product_table.setHorizontalHeaderLabels([
-            "ID", "SKU", "Product", "Price", "GST %", "Stock", "Reorder", "Actions"
+            "ID", "SKU", "Product", "Price", "GST %",
+            f"Stock ({self.user.get('warehouse_name', 'Warehouse')})", "Reorder", "Actions"
         ])
         self.product_table.setColumnHidden(0, True)
         product_header = self.product_table.horizontalHeader()
