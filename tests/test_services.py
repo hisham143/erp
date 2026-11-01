@@ -13,6 +13,7 @@ from app.db import (
     Product,
     BusinessSettings,
     Invoice,
+    ProductStock,
 )
 from app.services import create_invoice
 
@@ -88,4 +89,10 @@ def test_intra_state_invoice_and_stock_deduction():
         assert Decimal(invoice.cgst_total) == Decimal("18.00")
         assert Decimal(invoice.sgst_total) == Decimal("18.00")
         assert Decimal(invoice.grand_total) == Decimal("236.00")
-        assert Decimal(product.stock_qty) == Decimal("8.000")
+        assert Decimal(product.stock_qty) == Decimal("10.000")
+        stock = session.scalar(select(ProductStock).where(
+            ProductStock.product_id == product_id,
+            ProductStock.warehouse_id == 1,
+            ProductStock.company_id == 1,
+        ))
+        assert Decimal(stock.quantity) == Decimal("8.000")
