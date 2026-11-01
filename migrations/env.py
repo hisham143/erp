@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import URL
 
 from app.db import Base, DB_PATH
+from app.saas.config import get_database_url as get_app_database_url
 
 config = context.config
 
@@ -17,17 +18,14 @@ target_metadata = Base.metadata
 
 
 def get_database_url():
-    # Temporary database URL can be supplied during migration generation.
+    # Alembic-specific override is useful for isolated migration rehearsals.
     temporary_url = os.environ.get("ERP_ALEMBIC_DATABASE_URL")
-
     if temporary_url:
         return temporary_url
 
-    # Default: use the existing application database.
-    return URL.create(
-        "sqlite",
-        database=str(DB_PATH),
-    )
+    # Otherwise use the same configured database as the application.
+    # The default remains the existing local SQLite database.
+    return get_app_database_url()
 
 
 def run_migrations_offline() -> None:
