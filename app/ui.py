@@ -289,11 +289,16 @@ class LoginDialog(QDialog):
                 return
 
             def choose_context_value(title, values, label):
+                # Build each selector only from the contexts available at
+                # that level (company -> branch -> warehouse).
                 unique = {}
-                for context in contexts:
-                    key = context[label]
-                    unique[str(key)] = context[label.replace("_name", "_id")]
+                id_field = label.replace("_name", "_id")
+                for context in values:
+                    key = str(context[label])
+                    unique[key] = context[id_field]
                 labels = list(unique.keys())
+                if not labels:
+                    return None
                 if len(labels) == 1:
                     return unique[labels[0]]
                 selected, ok = QInputDialog.getItem(self, title, title, labels, 0, False)
