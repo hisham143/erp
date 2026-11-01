@@ -773,7 +773,7 @@ class MainWindow(QMainWindow):
     def refresh_dashboard(self):
         with SessionLocal() as s:
             today = __import__("datetime").date.today()
-            invoices = list(s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"]).order_by(Invoice.invoice_date.desc())))
+            invoices = list(s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"]).order_by(Invoice.invoice_date.desc())))
             issued = [inv for inv in invoices if inv.status == "issued"]
             sales = sum((Decimal(x.grand_total) for x in issued if x.invoice_date.date() == today), Decimal("0"))
             outstanding = sum((max(Decimal("0"), Decimal(x.grand_total) - Decimal(x.amount_paid)) for x in issued), Decimal("0"))
@@ -885,7 +885,7 @@ class MainWindow(QMainWindow):
 
     def pay_supplier_purchase(self, purchase_id):
         with SessionLocal() as session:
-            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
+            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"], Purchase.branch_id == self.user["branch_id"]))
             if not purchase: show_error(self, "Purchase not found."); return
             due = money(Decimal(str(purchase.grand_total)) - Decimal(str(purchase.amount_paid or 0)))
             number = purchase.purchase_number
@@ -916,19 +916,19 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Not found", "This record no longer exists.")
                 return
             if entity_type == "customer":
-                invoices = list(session.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.customer_id == obj.id, Invoice.status == "issued")))
+                invoices = list(session.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"], Invoice.customer_id == obj.id, Invoice.status == "issued")))
                 total_billed = sum((Decimal(str(inv.grand_total or 0)) for inv in invoices), Decimal("0.00"))
                 total_paid = sum((Decimal(str(inv.amount_paid or 0)) for inv in invoices), Decimal("0.00"))
                 total_due = total_billed - total_paid
                 details = (f"Name: {obj.name}\nGSTIN: {obj.gstin}\nState: {obj.state_code}\nPhone: {obj.phone}\nEmail: {obj.email}\nAddress: {obj.address}\n\nCredit limit: ₹{Decimal(str(obj.credit_limit or 0)):.2f}\nTotal purchases: ₹{total_billed:.2f}\nTotal paid: ₹{total_paid:.2f}\nOutstanding due: ₹{total_due:.2f}\n\nInvoice history:")
                 for inv in sorted(invoices, key=lambda x: x.invoice_date or __import__('datetime').datetime.min, reverse=True):
                     details += f"\n{inv.invoice_number} | {inv.invoice_date:%d-%m-%Y} | Total ₹{inv.grand_total:.2f} | Paid ₹{inv.amount_paid:.2f} | Due ₹{(Decimal(str(inv.grand_total))-Decimal(str(inv.amount_paid))):.2f}"
-                payments = list(session.scalars(select(Payment).join(Invoice).where(Payment.company_id == self.user["company_id"], Invoice.company_id == self.user["company_id"], Invoice.customer_id == obj.id).order_by(Payment.paid_at.desc())))
+                payments = list(session.scalars(select(Payment).join(Invoice).where(Payment.company_id == self.user["company_id"], Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"], Invoice.customer_id == obj.id).order_by(Payment.paid_at.desc())))
                 for inv in sorted(invoices, key=lambda x: x.invoice_date or __import__('datetime').datetime.min, reverse=True):
                     billed = Decimal(str(inv.grand_total or 0)); paid = Decimal(str(inv.amount_paid or 0)); due = billed - paid
                     invoice_rows.append((inv.id, inv.invoice_number, inv.invoice_date.strftime('%d-%m-%Y') if inv.invoice_date else '—', f"₹{billed:,.2f}", f"₹{paid:,.2f}", f"₹{due:,.2f}", "Paid" if due <= 0 else ("Partially Paid" if paid > 0 else "Unpaid")))
                 for payment in payments:
-                    inv = session.scalar(select(Invoice).where(Invoice.id == payment.invoice_id, Invoice.company_id == self.user["company_id"]))
+                    inv = session.scalar(select(Invoice).where(Invoice.id == payment.invoice_id, Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"]))
                     payment_rows.append((payment.paid_at.strftime('%d-%m-%Y %H:%M') if payment.paid_at else '—', inv.invoice_number if inv else '—', f"₹{Decimal(str(payment.amount or 0)):,.2f}", payment.method or '—', payment.reference or '—'))
                 customer_account = {"id": obj.id, "name": obj.name, "phone": obj.phone, "email": obj.email, "gstin": obj.gstin, "state_code": obj.state_code, "address": obj.address, "limit": Decimal(str(obj.credit_limit or 0)), "billed": total_billed, "paid": total_paid, "due": total_due}
             elif entity_type == "product":
@@ -942,7 +942,7 @@ class MainWindow(QMainWindow):
                 details = f"Purchase: {obj.purchase_number}\nDate: {obj.purchase_date:%d-%m-%Y}\nSupplier: {supplier.name if supplier else ''}\nSupplier invoice: {obj.supplier_invoice_number}\nTaxable: ₹{obj.taxable_total}\nTax: ₹{obj.tax_total}\nGrand total: ₹{obj.grand_total}\nPaid: ₹{paid:.2f}\nDue: ₹{due:.2f}"
                 for line in lines:
                     details += f"\n\nProduct: {line.description_snapshot} ({line.sku_snapshot})\nQuantity: {line.quantity}\nUnit cost: ₹{line.unit_cost}\nLine total: ₹{line.line_total}"
-                payments = list(session.scalars(select(SupplierPayment).where(SupplierPayment.company_id == self.user["company_id"], SupplierPayment.purchase_id == obj.id).order_by(SupplierPayment.paid_at)))
+                payments = list(session.scalars(select(SupplierPayment).join(Purchase).where(SupplierPayment.company_id == self.user["company_id"], Purchase.company_id == self.user["company_id"], Purchase.branch_id == self.user["branch_id"], SupplierPayment.purchase_id == obj.id).order_by(SupplierPayment.paid_at)))
                 if payments:
                     details += "\n\nPayment history:"
                     for payment in payments:
@@ -1038,7 +1038,7 @@ class MainWindow(QMainWindow):
 
     def edit_purchase_record(self, purchase_id):
         with SessionLocal() as session:
-            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"]))
+            purchase = session.scalar(select(Purchase).where(Purchase.id == int(purchase_id), Purchase.company_id == self.user["company_id"], Purchase.branch_id == self.user["branch_id"]))
             if not purchase:
                 QMessageBox.warning(self, "Not found", "Purchase not found."); return
             lines = list(session.scalars(select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id)))
@@ -1612,7 +1612,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "supplier_table"): return
         with SessionLocal() as s:
             rows = list(s.scalars(select(Supplier).where(Supplier.company_id == self.user["company_id"], Supplier.active.is_(True)).order_by(Supplier.name)))
-            purchases = list(s.scalars(select(Purchase).where(Purchase.company_id == self.user["company_id"])))
+            purchases = list(s.scalars(select(Purchase).where(Purchase.company_id == self.user["company_id"], Purchase.branch_id == self.user["branch_id"])))
             total_purchased = sum((Decimal(str(p.grand_total or 0)) for p in purchases), Decimal("0.00"))
             total_due = sum((Decimal(str(p.grand_total or 0)) - Decimal(str(p.amount_paid or 0)) for p in purchases), Decimal("0.00"))
             self.supplier_table.setRowCount(len(rows))
@@ -1883,7 +1883,7 @@ class MainWindow(QMainWindow):
     def refresh_purchases(self):
         if not hasattr(self, "purchase_table"): return
         with SessionLocal() as s:
-            rows = list(s.scalars(select(Purchase).where(Purchase.company_id == self.user["company_id"]).order_by(Purchase.id.desc())))
+            rows = list(s.scalars(select(Purchase).where(Purchase.company_id == self.user["company_id"], Purchase.branch_id == self.user["branch_id"]).order_by(Purchase.id.desc())))
             total = sum((Decimal(str(p.grand_total or 0)) for p in rows), Decimal("0.00"))
             paid_total = sum((Decimal(str(p.amount_paid or 0)) for p in rows), Decimal("0.00"))
             self.purchase_table.setRowCount(len(rows))
@@ -2684,7 +2684,7 @@ class MainWindow(QMainWindow):
         with SessionLocal() as s:
             invoices = list(
                 s.scalars(
-                    select(Invoice).where(Invoice.company_id == self.user["company_id"]).order_by(Invoice.id.desc())
+                    select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"]).order_by(Invoice.id.desc())
                 )
             )
 
@@ -2837,7 +2837,7 @@ class MainWindow(QMainWindow):
 
     def email_invoice(self, invoice_id):
         with SessionLocal() as session:
-            invoice = session.scalar(select(Invoice).where(Invoice.id == int(invoice_id), Invoice.company_id == self.user["company_id"]))
+            invoice = session.scalar(select(Invoice).where(Invoice.id == int(invoice_id), Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"]))
             if not invoice:
                 show_error(self, "Invoice not found.")
                 return
@@ -2989,7 +2989,7 @@ class MainWindow(QMainWindow):
 
     def refresh_reports(self):
         with SessionLocal() as s:
-            invoices = list(s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.status == "issued")))
+            invoices = list(s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"], Invoice.status == "issued")))
             taxable = sum((Decimal(i.taxable_total) for i in invoices), Decimal("0"))
             cgst = sum((Decimal(i.cgst_total) for i in invoices), Decimal("0"))
             sgst = sum((Decimal(i.sgst_total) for i in invoices), Decimal("0"))
@@ -3011,7 +3011,7 @@ class MainWindow(QMainWindow):
         with SessionLocal() as s, open(path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerow(["Invoice", "Date", "Customer", "Taxable", "CGST", "SGST", "IGST", "Total", "Paid", "Balance"])
-            for inv in s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"]).order_by(Invoice.invoice_date)):
+            for inv in s.scalars(select(Invoice).where(Invoice.company_id == self.user["company_id"], Invoice.branch_id == self.user["branch_id"]).order_by(Invoice.invoice_date)):
                 c = s.scalar(select(Customer).where(Customer.id == inv.customer_id, Customer.company_id == self.user["company_id"]))
                 writer.writerow([inv.invoice_number, inv.invoice_date.isoformat(), c.name if c else "",
                                  inv.taxable_total, inv.cgst_total, inv.sgst_total, inv.igst_total,
