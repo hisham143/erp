@@ -1,27 +1,50 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+import app.db as db_module
+import app.services as services_module
 from app.db import (
-    init_db,
-    SessionLocal,
-    User,
-    UserCompanyAccess,
-    BranchAccess,
-    Customer,
-    Product,
-    BusinessSettings,
-    Invoice,
-    ProductStock,
+    User, Company, Branch, Warehouse, UserCompanyAccess, BranchAccess,
+    Customer, Product, BusinessSettings, Invoice, ProductStock,
 )
 from app.services import create_invoice
 
 
-def test_intra_state_invoice_and_stock_deduction():
-    init_db()
-    with SessionLocal.begin() as session:
+def test_intra_state_invoice_and_stock_deduction(monkeypatch):
+    # Service tests must never write into the developer's real billing database.
+    test_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    test_sessions = sessionmaker(bind=test_engine, expire_on_commit=False, future=True)
+    monkeypatch.setattr(db_module, "engine", test_engine)
+    monkeypatch.setattr(db_module, "SessionLocal", test_sessions)
+    monkeypatch.setattr(services_module, "SessionLocal", test_sessions)
+    db_module.init_db()
+
+    with test_sessions.begin() as session:
         user = session.scalar(select(User).where(User.username == "admin"))
+        company = Company(id=1, name="Test Company", state_code="32")
+        session.add(company)
+        session.flush()
+        branch = Branch(id=1, company_id=company.id, name="Main", code="MAIN")
+        session.add(branch)
+        session.flush()
+        warehouse = Warehouse(
+            id=1, company_id=company.id, branch_id=branch.id,
+            name="Main Warehouse", code="MAIN",
+        )
+        session.add(warehouse)
+        session.flush()
+        settings = session.scalar(
+            select(BusinessSettings).where(BusinessSettings.company_id == 1).limit(1)
+        )
+        settings.company_id = company.id
         settings = session.scalar(
             select(BusinessSettings).where(BusinessSettings.company_id == 1).limit(1)
         )
@@ -81,7 +104,7 @@ def test_intra_state_invoice_and_stock_deduction():
         warehouse_id=1,
     )
 
-    with SessionLocal() as session:
+    with test_sessions() as session:
         invoice = session.get(Invoice, invoice_id)
         product = session.get(Product, product_id)
         assert invoice.invoice_number == number
@@ -96,3 +119,4 @@ def test_intra_state_invoice_and_stock_deduction():
             ProductStock.company_id == 1,
         ))
         assert Decimal(stock.quantity) == Decimal("8.000")
+    test_engine.dispose()
