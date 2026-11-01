@@ -1303,8 +1303,21 @@ class MainWindow(QMainWindow):
         title = QLabel("Products & Stock"); title.setStyleSheet("font-size:24px;font-weight:700;color:#172033;")
         subtitle = QLabel("Your product catalogue, available stock and reorder levels."); subtitle.setStyleSheet("color:#64748B;font-size:12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
-        add_button = QPushButton("＋  Add Product"); add_button.setMinimumHeight(42); add_button.clicked.connect(self.open_product_dialog)
-        header.addLayout(title_box); header.addStretch(); header.addWidget(add_button); root.addLayout(header)
+        transfer_button = QPushButton("⇄  Transfer Stock")
+        transfer_button.setMinimumHeight(42)
+        transfer_button.setObjectName("secondaryButton")
+        transfer_button.setToolTip(
+            "Move stock from the current warehouse to another warehouse in this branch"
+        )
+        transfer_button.clicked.connect(self.open_stock_transfer_page)
+        add_button = QPushButton("＋  Add Product")
+        add_button.setMinimumHeight(42)
+        add_button.clicked.connect(self.open_product_dialog)
+        header.addLayout(title_box)
+        header.addStretch()
+        header.addWidget(transfer_button)
+        header.addWidget(add_button)
+        root.addLayout(header)
 
         metrics = QHBoxLayout(); metrics.setSpacing(12)
         self.product_metric_labels = {}
@@ -1526,6 +1539,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "product_search"):
             self._filter_table(self.product_table, self.product_search.text(), (1, 2))
 
+
+    def open_stock_transfer_page(self):
+        """Navigate directly to the dedicated warehouse transfer workspace."""
+        try:
+            row = self.page_titles.index("Warehouse Stock Transfers")
+        except ValueError:
+            QMessageBox.warning(
+                self, "Stock Transfers unavailable",
+                "Please update the application to the latest ERP version.",
+            )
+            return
+        self.navigation.setCurrentRow(row)
 
     def stock_transfers_tab(self):
         page = QWidget()
