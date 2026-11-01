@@ -911,7 +911,13 @@ class MainWindow(QMainWindow):
         invoice_rows = []
         payment_rows = []
         with SessionLocal() as session:
-            obj = session.scalar(select(models[entity_type]).where(models[entity_type].id == int(entity_id), models[entity_type].company_id == self.user["company_id"]))
+            record_query = select(models[entity_type]).where(
+                models[entity_type].id == int(entity_id),
+                models[entity_type].company_id == self.user["company_id"],
+            )
+            if entity_type == "purchase":
+                record_query = record_query.where(Purchase.branch_id == self.user["branch_id"])
+            obj = session.scalar(record_query)
             if not obj:
                 QMessageBox.warning(self, "Not found", "This record no longer exists.")
                 return
