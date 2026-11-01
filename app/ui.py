@@ -17,13 +17,13 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QFrame, QApplication, QScrollArea, QSizePolicy
 )
 from sqlalchemy import select, func
-from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
+from .db import SessionLocal, User, Customer, Product, Invoice, InvoiceItem, Payment, BusinessSettings, Supplier, Purchase, PurchaseItem, SupplierPayment, StockMovement, ProductStock, Warehouse, AuditLog, verify_password, hash_password, money, UserCompanyAccess, BranchAccess
 from .access import get_accessible_contexts, validate_user_context
 from .company_management import CompanyManagementPage
 from .services import (
     add_customer, add_product, create_invoice,
     calculate_invoice_preview, record_payment,
-    add_supplier, record_purchase, update_purchase, record_supplier_payment
+    add_supplier, record_purchase, update_purchase, record_supplier_payment, _stock_row
 )
 from .pdf_invoice import generate_invoice_pdf, generate_thermal_receipt
 from .purchase_ocr import read_bill_text, suggest_purchase_fields
@@ -778,7 +778,25 @@ class MainWindow(QMainWindow):
             sales = sum((Decimal(x.grand_total) for x in issued if x.invoice_date.date() == today), Decimal("0"))
             outstanding = sum((max(Decimal("0"), Decimal(x.grand_total) - Decimal(x.amount_paid)) for x in issued), Decimal("0"))
             products = list(s.scalars(select(Product).where(Product.company_id == self.user["company_id"], Product.active.is_(True)).order_by(Product.name)))
-            low_products = [p for p in products if Decimal(p.stock_qty) <= Decimal(p.reorder_level)]
+            stock_by_product = {
+                row.product_id: row
+                for row in s.scalars(select(ProductStock).where(
+                    ProductStock.company_id == self.user["company_id"],
+                    ProductStock.warehouse_id == self.user["warehouse_id"],
+                ))
+            }
+            default_warehouse_id = s.scalar(
+                select(Warehouse.id).where(
+                    Warehouse.company_id == self.user["company_id"]
+                ).order_by(Warehouse.id).limit(1)
+            )
+            def current_stock(product):
+                row = stock_by_product.get(product.id)
+                if row is not None:
+                    return Decimal(str(row.quantity or 0)), Decimal(str(row.reorder_level or 0))
+                legacy = product.stock_qty or 0 if self.user["warehouse_id"] == default_warehouse_id else 0
+                return Decimal(str(legacy)), Decimal(str(product.reorder_level or 0))
+            low_products = [p for p in products if current_stock(p)[0] <= current_stock(p)[1]]
 
             # Last six calendar months, including the current month.
             from datetime import date
@@ -811,16 +829,16 @@ class MainWindow(QMainWindow):
             dashboard_products = sorted(
                 products,
                 key=lambda p: (
-                    Decimal(str(p.stock_qty or 0)) > Decimal(str(p.reorder_level or 0)),
-                    Decimal(str(p.stock_qty or 0)),
+                    current_stock(p)[0] > current_stock(p)[1],
+                    current_stock(p)[0],
                     p.name.casefold(),
                 ),
             )
             stock_rows = [
-                (p.sku, p.name, f"{Decimal(str(p.stock_qty or 0)):,.3f} {p.unit}",
-                 f"{Decimal(str(p.reorder_level or 0)):,.3f} {p.unit}",
-                 "LOW STOCK" if Decimal(str(p.stock_qty or 0)) <= Decimal(str(p.reorder_level or 0)) else "In stock",
-                 Decimal(str(p.stock_qty or 0)) <= Decimal(str(p.reorder_level or 0)))
+                (p.sku, p.name, f"{current_stock(p)[0]:,.3f} {p.unit}",
+                 f"{current_stock(p)[1]:,.3f} {p.unit}",
+                 "LOW STOCK" if current_stock(p)[0] <= current_stock(p)[1] else "In stock",
+                 current_stock(p)[0] <= current_stock(p)[1])
                 for p in dashboard_products
             ]
 
@@ -938,7 +956,8 @@ class MainWindow(QMainWindow):
                     payment_rows.append((payment.paid_at.strftime('%d-%m-%Y %H:%M') if payment.paid_at else '—', inv.invoice_number if inv else '—', f"₹{Decimal(str(payment.amount or 0)):,.2f}", payment.method or '—', payment.reference or '—'))
                 customer_account = {"id": obj.id, "name": obj.name, "phone": obj.phone, "email": obj.email, "gstin": obj.gstin, "state_code": obj.state_code, "address": obj.address, "limit": Decimal(str(obj.credit_limit or 0)), "billed": total_billed, "paid": total_paid, "due": total_due}
             elif entity_type == "product":
-                details = f"SKU: {obj.sku}\nName: {obj.name}\nHSN/SAC: {obj.hsn_sac}\nUnit: {obj.unit}\nSelling price: ₹{obj.selling_price}\nPurchase price: ₹{obj.purchase_price}\nGST: {obj.gst_rate}%\nCurrent stock: {obj.stock_qty}\nReorder level: {obj.reorder_level}"
+                stock = _stock_row(session, obj, self.user["warehouse_id"], self.user["company_id"])
+                details = f"SKU: {obj.sku}\nName: {obj.name}\nHSN/SAC: {obj.hsn_sac}\nUnit: {obj.unit}\nSelling price: ₹{obj.selling_price}\nPurchase price: ₹{obj.purchase_price}\nGST: {obj.gst_rate}%\nCurrent warehouse stock: {stock.quantity}\nReorder level: {stock.reorder_level}"
             elif entity_type == "supplier":
                 details = f"Name: {obj.name}\nGSTIN: {obj.gstin}\nState: {obj.state_code}\nPhone: {obj.phone}\nAddress: {obj.address}"
             else:
@@ -992,6 +1011,9 @@ class MainWindow(QMainWindow):
                 "supplier": {"Name": ("name", "text"), "GSTIN": ("gstin", "text"), "State code": ("state_code", "text"),
                 "Phone": ("phone", "text"), "Address": ("address", "text")}}[entity_type]
             original = {attr: getattr(obj, attr) for attr, _kind in values.values()}
+            if entity_type == "product":
+                stock = _stock_row(session, obj, self.user["warehouse_id"], self.user["company_id"])
+                original["stock_qty"] = stock.quantity
         dialog = QDialog(self); dialog.setWindowTitle(f"Edit {entity_type.title()}"); dialog.setMinimumWidth(520)
         form = QFormLayout(); form.setSpacing(10); controls = {}
         for label, (attr, kind) in values.items():
@@ -1030,10 +1052,14 @@ class MainWindow(QMainWindow):
             with SessionLocal.begin() as session:
                 obj = session.scalar(select(models[entity_type]).where(models[entity_type].id == int(entity_id), models[entity_type].company_id == self.user["company_id"]))
                 if entity_type == "product":
-                    old_stock = Decimal(str(obj.stock_qty)); new_stock = Decimal(str(updates["stock_qty"]))
+                    stock = _stock_row(session, obj, self.user["warehouse_id"], self.user["company_id"])
+                    old_stock = Decimal(str(stock.quantity or 0))
+                    new_stock = Decimal(str(updates.pop("stock_qty")))
                     if new_stock < 0: raise ValueError("Stock cannot be negative.")
                     delta = new_stock - old_stock
-                else: delta = Decimal("0")
+                    stock.quantity = new_stock
+                else:
+                    delta = Decimal("0")
                 for attr, value in updates.items(): setattr(obj, attr, value)
                 if entity_type == "product" and delta:
                     session.add(StockMovement(company_id=self.user["company_id"], branch_id=self.user["branch_id"], warehouse_id=self.user["warehouse_id"], product_id=obj.id, quantity_delta=delta, reason="stock_adjustment", reference="MANUAL-EDIT", created_by=self.user["username"]))
@@ -1459,10 +1485,25 @@ class MainWindow(QMainWindow):
     def refresh_products(self):
         with SessionLocal() as s:
             rows = list(s.scalars(select(Product).where(Product.company_id == self.user["company_id"], Product.active.is_(True)).order_by(Product.name)))
+            stock_rows = {
+                row.product_id: row
+                for row in s.scalars(select(ProductStock).where(
+                    ProductStock.company_id == self.user["company_id"],
+                    ProductStock.warehouse_id == self.user["warehouse_id"],
+                ))
+            }
+            default_warehouse_id = s.scalar(
+                select(Warehouse.id).where(
+                    Warehouse.company_id == self.user["company_id"]
+                ).order_by(Warehouse.id).limit(1)
+            )
             self.product_table.setRowCount(len(rows))
             low_count = 0; in_stock_count = 0; stock_value = Decimal("0.00")
             for r, p in enumerate(rows):
-                stock = Decimal(str(p.stock_qty or 0)); reorder = Decimal(str(p.reorder_level or 0))
+                stock_row = stock_rows.get(p.id)
+                legacy_stock = p.stock_qty or 0 if self.user["warehouse_id"] == default_warehouse_id else 0
+                stock = Decimal(str(stock_row.quantity if stock_row else legacy_stock))
+                reorder = Decimal(str(stock_row.reorder_level if stock_row else p.reorder_level or 0))
                 in_stock_count += int(stock > 0); stock_value += stock * Decimal(str(p.purchase_price or 0))
                 is_low = stock <= reorder
                 low_count += int(is_low)
@@ -2126,8 +2167,24 @@ class MainWindow(QMainWindow):
         with SessionLocal() as s:
             for c in s.scalars(select(Customer).where(Customer.company_id == self.user["company_id"], Customer.active.is_(True)).order_by(Customer.name)):
                 self.i_customer.addItem(f"{c.name} (state {c.state_code})", c.id)
+            stock_rows = {
+                row.product_id: row
+                for row in s.scalars(select(ProductStock).where(
+                    ProductStock.company_id == self.user["company_id"],
+                    ProductStock.warehouse_id == self.user["warehouse_id"],
+                ))
+            }
+            default_warehouse_id = s.scalar(
+                select(Warehouse.id).where(
+                    Warehouse.company_id == self.user["company_id"]
+                ).order_by(Warehouse.id).limit(1)
+            )
             for p in s.scalars(select(Product).where(Product.company_id == self.user["company_id"], Product.active.is_(True)).order_by(Product.name)):
-                self.i_product.addItem(f"{p.sku} — {p.name} | ₹{p.selling_price} | stock {p.stock_qty}", p.id)
+                stock_row = stock_rows.get(p.id)
+                stock_qty = stock_row.quantity if stock_row else (
+                    p.stock_qty if self.user["warehouse_id"] == default_warehouse_id else 0
+                )
+                self.i_product.addItem(f"{p.sku} — {p.name} | ₹{p.selling_price} | stock {stock_qty}", p.id)
         if current_customer is not None:
             idx = self.i_customer.findData(current_customer)
             if idx >= 0: self.i_customer.setCurrentIndex(idx)
