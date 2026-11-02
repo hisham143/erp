@@ -157,3 +157,23 @@ Run the full suite:
     python -m pytest -q
 
 The Playwright test starts an isolated temporary SQLite-backed API process and checks registration, business setup save/read, automatic HttpOnly-cookie session restoration after reload and explicit sign-out/login, and responsive layout behavior at mobile (390px) and tablet (768px) widths. It does not connect to or modify the user's desktop database.
+
+
+## Operational ERP provisioning from SaaS onboarding
+
+Migration `2a8c6e4f1b90` adds `saas_tenant_companies`, a one-to-one workspace-to-operational-company mapping with references to its first branch and warehouse.
+
+When an authorized tenant owner/admin saves Business Setup, the API now creates (in the same database transaction):
+- One operational `Company` populated from the business profile.
+- One `Branch` using the supplied first branch name and code `MAIN`.
+- One `Warehouse` using the supplied first warehouse name and code `MAIN`.
+- One `BusinessSettings` row for the company.
+- One `SaaSTenantCompany` mapping linking the tenant to these records.
+
+Repeated profile saves update the linked master records rather than creating duplicates. `GET /onboarding/business` and `GET /onboarding/erp-setup` return the linked operational identifiers. Tenant isolation is enforced by resolving the mapping only through the authenticated tenant ID.
+
+This is an initial provisioning bridge, not yet the complete cloud ERP service boundary. SaaS identities are intentionally not copied into the legacy desktop `users` table, and legacy `UserCompanyAccess` / `BranchAccess` are not created from this endpoint. Operational transaction APIs must continue to enforce tenant/company/branch/warehouse authorization before any cloud business data is exposed.
+
+### Migration and verification gate
+
+The new migration is additive and does not rewrite or delete existing company, branch, warehouse, customer, invoice, stock, or backup data. Before applying it to a local database, close the desktop application and API, make a new timestamped backup without overwriting any prior backup, verify that the backup can be opened, and inspect the current Alembic revision. Then apply the migration and run the complete automated suite, Alembic check, and browser E2E test. Never run this migration against production data before a separate disposable PostgreSQL rehearsal and restore drill.
