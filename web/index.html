@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11152d">
+  <title>ERP Cloud · Business workspace</title>
+  <link rel="stylesheet" href="/web-assets/app.css">
+  <script src="/web-assets/app.js" defer></script>
+</head>
+<body>
+  <div class="app-frame">
+    <aside class="sidebar" aria-label="Main navigation">
+      <a class="brand" href="/" aria-label="ERP Cloud home"><span class="brand-mark">E</span><span>ERP <b>Cloud</b></span></a>
+      <div class="workspace-chip"><span class="status-dot"></span><span id="workspace-label">Your workspace</span></div>
+      <nav class="side-nav">
+        <span class="nav-caption">WORKSPACE</span>
+        <a class="nav-item active" href="#setup"><span class="nav-icon">▦</span> Business setup</a>
+        <span class="nav-caption nav-caption-spaced">YOUR ERP</span>
+        <div class="nav-muted">Modules will appear as they are enabled for your workspace.</div>
+      </nav>
+      <div class="sidebar-bottom"><span class="secure-mark">●</span> Private business workspace</div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumb"><span>Workspace</span><span class="crumb-sep">/</span><strong id="page-label">Get started</strong></div>
+        <div class="topbar-right"><span class="environment-label">DEVELOPMENT</span><span class="avatar" id="avatar">E</span><span id="user-label">Not signed in</span></div>
+      </header>
+
+      <section class="page-content">
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+        <section id="auth-view" class="auth-layout">
+          <div class="intro-panel">
+            <span class="eyebrow">INDIA-READY BUSINESS SOFTWARE</span>
+            <h1>One clear place<br>to run your business.</h1>
+            <p>Set up your workspace first. Your billing, inventory and business tools will be connected here as each module is released.</p>
+            <div class="intro-points"><span>✓ Business-first setup</span><span>✓ Company and location ready</span><span>✓ Your data stays in your workspace</span></div>
+          </div>
+          <div class="auth-card">
+            <div class="auth-tabs" role="tablist" aria-label="Account access">
+              <button class="tab active" id="login-tab" type="button" role="tab" aria-selected="true">Sign in</button>
+              <button class="tab" id="register-tab" type="button" role="tab" aria-selected="false">Create workspace</button>
+            </div>
+            <form id="login-form" class="form-panel">
+              <h2>Welcome back</h2><p class="muted">Sign in to your business workspace.</p>
+              <label>Email address<input name="email" type="email" autocomplete="username" required maxlength="254" placeholder="you@business.com"></label>
+              <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="128" placeholder="Your password"></label>
+              <label>Workspace code<input name="tenant_slug" required minlength="2" maxlength="80" placeholder="your-business-abc123"></label>
+              <button class="primary-button full-button" type="submit">Sign in <span>→</span></button>
+            </form>
+            <form id="register-form" class="form-panel" hidden>
+              <h2>Create your workspace</h2><p class="muted">Start with your business and owner account.</p>
+              <label>Business / workspace name<input name="tenant_name" required minlength="2" maxlength="180" placeholder="e.g. ABC Wholesale"></label>
+              <label>Your full name<input name="owner_name" required minlength="2" maxlength="180" placeholder="Business owner"></label>
+              <label>Work email<input name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@business.com"></label>
+              <label>Create password<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="At least 12 characters"></label>
+              <button class="primary-button full-button" type="submit">Create workspace <span>→</span></button>
+              <p class="fine-print">Use a unique password. Email verification and password recovery will be added before public launch.</p>
+            </form>
+          </div>
+        </section>
+
+        <section id="onboarding-view" class="onboarding-view" hidden>
+          <div class="page-heading">
+            <div><span class="eyebrow">YOUR BUSINESS · STEP 1 OF 1</span><h1>Let's set up your business</h1><p>These details personalize your workspace. You can update them later.</p></div>
+            <div class="progress-pill"><span class="status-dot"></span> Setup in progress</div>
+          </div>
+          <div class="setup-grid">
+            <div class="setup-main">
+              <form id="business-form">
+                <section class="form-section">
+                  <div class="section-heading"><span class="step-number">01</span><div><h2>Business details</h2><p>Tell us how your business should appear in the ERP.</p></div></div>
+                  <div class="field-grid">
+                    <label>Trade / business name <span class="required">*</span><input name="trade_name" required minlength="2" maxlength="180" placeholder="Your business name"></label>
+                    <label>Legal name <span class="optional">Optional</span><input name="legal_name" maxlength="180" placeholder="Registered legal name"></label>
+                    <label class="span-two">Business address <span class="optional">Optional</span><textarea name="address" rows="2" maxlength="2000" placeholder="Street, area, city, PIN code"></textarea></label>
+                    <label>Phone number <span class="optional">Optional</span><input name="phone" maxlength="30" placeholder="+91"></label>
+                  </div>
+                </section>
+                <section class="form-section">
+                  <div class="section-heading"><span class="step-number">02</span><div><h2>GST registration</h2><p>Choose the correct registration status for this business.</p></div></div>
+                  <div class="field-grid">
+                    <label>GST registration type<select name="gst_registration_type" id="gst-type"><option value="regular">Regular</option><option value="composition">Composition</option><option value="unregistered">Unregistered</option><option value="casual">Casual taxable person</option><option value="sez">SEZ</option></select></label>
+                    <label>GSTIN <span class="optional" id="gst-required-label">Required for selected type</span><input name="gstin" id="gstin" maxlength="15" autocapitalize="characters" placeholder="15-character GSTIN"></label>
+                    <label>State / UT <span class="required">*</span><select name="state_code" id="state-code" required><option value="">Select state</option></select></label>
+                    <label>Financial year starts <select name="financial_year_start_month"><option value="4" selected>April</option><option value="1">January</option></select></label>
+                  </div>
+                  <p class="helper-text">GSTIN is checked for format and state-code consistency only. Live GST portal verification is not connected yet.</p>
+                </section>
+                <section class="form-section">
+                  <div class="section-heading"><span class="step-number">03</span><div><h2>Your first location</h2><p>Start with one branch and one warehouse. Add more later.</p></div></div>
+                  <div class="field-grid">
+                    <label>Branch name<input name="first_branch_name" required minlength="2" maxlength="180" value="Main Branch"></label>
+                    <label>Warehouse name<input name="first_warehouse_name" required minlength="2" maxlength="180" value="Main Warehouse"></label>
+                  </div>
+                </section>
+                <div class="form-actions"><button class="secondary-button" id="signout-button" type="button">Sign out</button><button class="primary-button" type="submit">Save business setup <span>→</span></button></div>
+              </form>
+            </div>
+            <aside class="setup-aside">
+              <div class="aside-card">
+                <div class="aside-icon">✦</div><h3>Your workspace, your business</h3><p>These details are stored against your signed-in workspace. Other tenants cannot access this profile through the onboarding API.</p>
+                <div class="aside-divider"></div><div class="aside-check">✓ <span>Business profile</span></div><div class="aside-check">✓ <span>GST setup</span></div><div class="aside-check">✓ <span>First branch and warehouse details</span></div>
+              </div>
+              <div class="help-card"><strong>Need help?</strong><p>Keep your GST registration certificate nearby when entering GST details.</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="complete-view" class="complete-view" hidden>
+          <div class="complete-card"><div class="complete-icon">✓</div><span class="eyebrow">BUSINESS PROFILE SAVED</span><h1>Your workspace is taking shape.</h1><p id="complete-summary"></p><div class="complete-details" id="complete-details"></div><button class="secondary-button" id="edit-setup-button" type="button">Edit business details</button><p class="fine-print">The branch and warehouse names are saved as onboarding details. Actual operational Company, Branch and Warehouse records will be connected in the next implementation stage.</p></div>
+        </section>
+      </section>
+      <footer class="page-footer"><span>ERP Cloud · Development preview</span><span>Secure workspace foundation</span></footer>
+    </main>
+  </div>
+</body>
+</html>
