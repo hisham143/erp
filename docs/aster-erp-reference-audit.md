@@ -145,3 +145,8 @@ Not yet implemented: creation/linkage of actual tenant-owned Company, Branch, an
 The Aster-inspired web entry UI is now implemented at `web/index.html`, `web/app.css`, and `web/app.js`, served from FastAPI at `/`. It includes tenant registration/sign-in, workspace code display, business-profile onboarding, GST/state inputs, branch/warehouse naming, saved-profile confirmation, edit, and sign-out. Layout breakpoints are covered by a Playwright browser test at mobile and tablet widths.
 
 This is intentionally not a fake dashboard. No fabricated KPI values or nonfunctional ERP module links are shown. The UI must not be described as the full dashboard or finished ERP until the actual business modules and live data services are implemented.
+
+
+## SaaS onboarding to operational ERP setup
+
+Business onboarding now provisions a tenant-owned operational Company, its first Branch, Warehouse, and BusinessSettings, with a unique SaaS tenant mapping. Editing onboarding updates those records in place. API tests cover idempotency and cross-tenant mapping isolation. This is only the first operational foundation; it does not yet make the desktop UI or legacy transaction services safe as multi-tenant cloud modules.
