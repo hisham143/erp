@@ -1,12 +1,13 @@
 """Initial cloud API: health checks and tenant-scoped authentication."""
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -46,7 +47,7 @@ class LoginRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str = Field(min_length=40, max_length=200)
+    refresh_token: str | None = Field(default=None, min_length=40, max_length=200)
 
 
 
@@ -78,6 +79,26 @@ def _normal_email(value: str) -> str:
 def _slug(value: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")[:60]
     return f"{base or 'business'}-{create_refresh_token()[:6].lower()}"
+
+
+def _set_refresh_cookie(response: Response, token: str | None) -> None:
+    """Keep rotating refresh credentials out of browser JavaScript storage."""
+    secure = os.getenv("ERP_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes"}
+    if token:
+        response.set_cookie(
+            key="erp_refresh",
+            value=token,
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            path="/auth",
+            max_age=REFRESH_TOKEN_DAYS * 24 * 60 * 60,
+        )
+    else:
+        response.delete_cookie(
+            key="erp_refresh", path="/auth", httponly=True,
+            secure=secure, samesite="lax",
+        )
 
 
 def _issue_tokens(session: Session, identity: SaaSIdentity, tenant: SaaSTenant) -> dict:
@@ -113,7 +134,7 @@ def ready(session: Session = Depends(get_db)):
 
 
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED, tags=["authentication"])
-def register(payload: RegisterRequest, session: Session = Depends(get_db)):
+def register(payload: RegisterRequest, response: Response, session: Session = Depends(get_db)):
     """Create a new SaaS tenant and its first owner atomically."""
     email = _normal_email(payload.email)
     if len(payload.password) < 12:
@@ -134,6 +155,7 @@ def register(payload: RegisterRequest, session: Session = Depends(get_db)):
         ))
         result = _issue_tokens(session, identity, tenant)
         session.commit()
+        _set_refresh_cookie(response, result["refresh_token"])
         return result
     except RuntimeError as exc:
         session.rollback()
@@ -147,7 +169,7 @@ def register(payload: RegisterRequest, session: Session = Depends(get_db)):
 
 
 @app.post("/auth/login", tags=["authentication"])
-def login(payload: LoginRequest, session: Session = Depends(get_db)):
+def login(payload: LoginRequest, response: Response, session: Session = Depends(get_db)):
     email = _normal_email(payload.email)
     identity = session.scalar(select(SaaSIdentity).where(
         SaaSIdentity.email == email, SaaSIdentity.active.is_(True)
@@ -168,6 +190,7 @@ def login(payload: LoginRequest, session: Session = Depends(get_db)):
     try:
         result = _issue_tokens(session, identity, tenant)
         session.commit()
+        _set_refresh_cookie(response, result["refresh_token"])
         return result
     except RuntimeError as exc:
         session.rollback()
@@ -175,8 +198,11 @@ def login(payload: LoginRequest, session: Session = Depends(get_db)):
 
 
 @app.post("/auth/refresh", tags=["authentication"])
-def refresh(payload: RefreshRequest, session: Session = Depends(get_db)):
-    token_hash = hash_refresh_token(payload.refresh_token)
+def refresh(request: Request, response: Response, payload: RefreshRequest | None = None, session: Session = Depends(get_db)):
+    refresh_token = (payload.refresh_token if payload else None) or request.cookies.get("erp_refresh")
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token is missing.")
+    token_hash = hash_refresh_token(refresh_token)
     stored = session.scalar(select(SaaSRefreshSession).where(
         SaaSRefreshSession.token_hash == token_hash,
         SaaSRefreshSession.revoked_at.is_(None),
@@ -219,6 +245,7 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_db)):
             )
         result = _issue_tokens(session, identity, tenant)
         session.commit()
+        _set_refresh_cookie(response, result["refresh_token"])
         return result
     except RuntimeError as exc:
         session.rollback()
@@ -227,16 +254,19 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_db)):
 
 
 @app.post("/auth/logout", tags=["authentication"])
-def logout(payload: RefreshRequest, session: Session = Depends(get_db)):
-    """Revoke the supplied refresh session. Safe to call more than once."""
-    token_hash = hash_refresh_token(payload.refresh_token)
-    stored = session.scalar(select(SaaSRefreshSession).where(
-        SaaSRefreshSession.token_hash == token_hash,
-        SaaSRefreshSession.revoked_at.is_(None),
-    ))
-    if stored:
-        stored.revoked_at = datetime.utcnow()
-        session.commit()
+def logout(request: Request, response: Response, payload: RefreshRequest | None = None, session: Session = Depends(get_db)):
+    """Revoke the supplied refresh session and clear its browser cookie."""
+    refresh_token = (payload.refresh_token if payload else None) or request.cookies.get("erp_refresh")
+    if refresh_token:
+        token_hash = hash_refresh_token(refresh_token)
+        stored = session.scalar(select(SaaSRefreshSession).where(
+            SaaSRefreshSession.token_hash == token_hash,
+            SaaSRefreshSession.revoked_at.is_(None),
+        ))
+        if stored:
+            stored.revoked_at = datetime.utcnow()
+            session.commit()
+    _set_refresh_cookie(response, None)
     return {"status": "signed_out"}
 
 
