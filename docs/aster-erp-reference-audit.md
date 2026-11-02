@@ -138,3 +138,10 @@ The first tenant onboarding vertical slice now has:
 - Additive Alembic migration `f3b7d9a2c641`
 
 Not yet implemented: creation/linkage of actual tenant-owned Company, Branch, and Warehouse records; GSTIN verification; email verification; full responsive web onboarding UI. Do not represent these as complete.
+
+
+## Web UI delivery — initial shell
+
+The Aster-inspired web entry UI is now implemented at `web/index.html`, `web/app.css`, and `web/app.js`, served from FastAPI at `/`. It includes tenant registration/sign-in, workspace code display, business-profile onboarding, GST/state inputs, branch/warehouse naming, saved-profile confirmation, edit, and sign-out. Layout breakpoints are covered by a Playwright browser test at mobile and tablet widths.
+
+This is intentionally not a fake dashboard. No fabricated KPI values or nonfunctional ERP module links are shown. The UI must not be described as the full dashboard or finished ERP until the actual business modules and live data services are implemented.
