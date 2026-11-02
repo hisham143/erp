@@ -213,3 +213,29 @@ def test_business_onboarding_allows_unregistered_business(client_and_sessions):
     assert response.status_code == 200
     assert response.json()["gstin"] == ""
     assert response.json()["onboarding_completed"] is True
+
+
+def test_web_app_serves_ui_and_assets(client_and_sessions):
+    client, _ = client_and_sessions
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "ERP Cloud" in page.text
+    assert "Create your workspace" in page.text
+    css = client.get("/web-assets/app.css")
+    js = client.get("/web-assets/app.js")
+    assert css.status_code == 200 and ".app-frame" in css.text
+    assert js.status_code == 200 and "/onboarding/business" in js.text
+
+
+def test_logout_revokes_refresh_token(client_and_sessions):
+    client, _ = client_and_sessions
+    registered = _register(client, "logout@example.com", "Logout Workspace")
+    response = client.post("/auth/logout", json={
+        "refresh_token": registered["refresh_token"]
+    })
+    assert response.status_code == 200
+    assert response.json()["status"] == "signed_out"
+    replay = client.post("/auth/refresh", json={
+        "refresh_token": registered["refresh_token"]
+    })
+    assert replay.status_code == 401
