@@ -56,3 +56,48 @@ In another PowerShell window:
     Invoke-RestMethod http://127.0.0.1:8000/health/ready
 
 Stop the API with Ctrl+C. These endpoints verify only process/database connectivity; they do not mean tenant authentication or production readiness is complete.
+
+
+## Tenant registration and login foundation (implemented; development only)
+
+The SaaS identity model is intentionally separate from the desktop `users` table:
+- `saas_tenants`: SaaS customer workspace
+- `saas_identities`: normalized unique email identity
+- `saas_tenant_memberships`: role and active membership in a tenant
+- `saas_refresh_sessions`: hashed, expiring, revocable refresh tokens
+
+API routes:
+- `POST /auth/register`: creates a tenant and its first owner in one transaction
+- `POST /auth/login`: authenticates an email/password against an active tenant membership
+- `POST /auth/refresh`: rotates the opaque refresh token; the old token cannot be reused
+- `GET /auth/me`: returns the tenant membership associated with the bearer access token
+
+Access tokens expire after 15 minutes. Refresh tokens are random opaque values stored only as SHA-256 hashes and expire after 30 days. Passwords use the application's PBKDF2-HMAC-SHA256 password hashing helper. The signing secret is never generated or defaulted by the application.
+
+### Local development setup
+
+After taking a fresh verified backup, pull the branch and install dependencies. Inspect the current Alembic revision before applying the additive SaaS migration:
+
+    git pull --ff-only origin feature/erp-foundation
+    python -m pip install -r requirements.txt
+    python -m compileall app tests
+    python -m alembic current
+
+If the current revision is the expected prior revision, take/verify a fresh backup and then run:
+
+    python -m alembic upgrade head
+    python -m alembic check
+    python -m pytest -q
+
+Generate a strong local-only signing secret and set it in the same PowerShell window used to start Uvicorn:
+
+    python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+Copy the generated value locally (do not share it), then:
+
+    $env:ERP_AUTH_SECRET = "PASTE_YOUR_LOCAL_SECRET_HERE"
+    uvicorn app.saas.api:app --host 127.0.0.1 --port 8000
+
+Use the interactive API documentation at `http://127.0.0.1:8000/docs` to exercise registration, login, refresh, and `/auth/me`.
+
+This is a development foundation, not a public-launch-ready identity service. Email verification, password reset, MFA, login/registration rate limiting, abuse controls, security event monitoring, tenant lifecycle administration, and production secret management remain required before public exposure. Do not deploy this API publicly or point it at production data.
