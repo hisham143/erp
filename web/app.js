@@ -158,7 +158,7 @@
   $("edit-setup-button").addEventListener("click", () => {
     fillProfile(state.profile); show("onboarding-view"); clearNotice();
   });
-  $("signout-button").addEventListener("click", async () => {
+  async function signOut() {
     try {
       if (state.refreshToken) await fetch("/auth/logout",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refresh_token:state.refreshToken})});
     } finally {
@@ -166,6 +166,8 @@
       $("user-label").textContent = "Not signed in"; $("avatar").textContent = "E"; $("workspace-label").textContent = "Your workspace";
       selectTab("login"); show("auth-view"); notice("You have signed out.", "success");
     }
-  });
+  }
+  $("signout-button").addEventListener("click", signOut);
+  $("signout-complete-button").addEventListener("click", signOut);
   show("auth-view");
 })();
