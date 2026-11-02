@@ -131,3 +131,85 @@ def test_protected_endpoint_rejects_missing_token(client_and_sessions):
     client, _ = client_and_sessions
     response = client.get("/auth/me")
     assert response.status_code == 401
+
+
+def _register(client, email, tenant_name):
+    response = client.post("/auth/register", json={
+        "tenant_name": tenant_name,
+        "owner_name": "Workspace Owner",
+        "email": email,
+        "password": "a-strong-password-123",
+    })
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_business_onboarding_save_and_read_is_tenant_scoped(client_and_sessions):
+    client, _ = client_and_sessions
+    first = _register(client, "owner-one@example.com", "First Workspace")
+    second = _register(client, "owner-two@example.com", "Second Workspace")
+    first_headers = {"Authorization": f"Bearer {first['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+
+    missing = client.get("/onboarding/business", headers=first_headers)
+    assert missing.status_code == 404
+
+    payload = {
+        "trade_name": "Acme Wholesale",
+        "legal_name": "Acme Wholesale Private Limited",
+        "gstin": "32ABCDE1234F1Z5",
+        "state_code": "32",
+        "gst_registration_type": "regular",
+        "financial_year_start_month": 4,
+        "address": "Kochi, Kerala",
+        "phone": "+919876543210",
+        "first_branch_name": "Kochi Branch",
+        "first_warehouse_name": "Central Warehouse",
+    }
+    saved = client.put("/onboarding/business", json=payload, headers=first_headers)
+    assert saved.status_code == 200
+    assert saved.json()["onboarding_completed"] is True
+    assert saved.json()["trade_name"] == "Acme Wholesale"
+
+    read_back = client.get("/onboarding/business", headers=first_headers)
+    assert read_back.status_code == 200
+    assert read_back.json()["gstin"] == "32ABCDE1234F1Z5"
+
+    other_tenant = client.get("/onboarding/business", headers=second_headers)
+    assert other_tenant.status_code == 404
+
+
+def test_business_onboarding_rejects_invalid_gstin_and_state_mismatch(client_and_sessions):
+    client, _ = client_and_sessions
+    registered = _register(client, "gst-check@example.com", "GST Check Workspace")
+    headers = {"Authorization": f"Bearer {registered['access_token']}"}
+    payload = {
+        "trade_name": "GST Check Traders",
+        "gstin": "INVALID",
+        "state_code": "32",
+        "gst_registration_type": "regular",
+        "first_branch_name": "Main Branch",
+        "first_warehouse_name": "Main Warehouse",
+    }
+    invalid_format = client.put("/onboarding/business", json=payload, headers=headers)
+    assert invalid_format.status_code == 422
+
+    payload["gstin"] = "29ABCDE1234F1Z5"
+    mismatch = client.put("/onboarding/business", json=payload, headers=headers)
+    assert mismatch.status_code == 422
+
+
+def test_business_onboarding_allows_unregistered_business(client_and_sessions):
+    client, _ = client_and_sessions
+    registered = _register(client, "unregistered@example.com", "Unregistered Workspace")
+    headers = {"Authorization": f"Bearer {registered['access_token']}"}
+    response = client.put("/onboarding/business", json={
+        "trade_name": "Local Retail Shop",
+        "state_code": "32",
+        "gst_registration_type": "unregistered",
+        "first_branch_name": "Main Branch",
+        "first_warehouse_name": "Main Warehouse",
+    }, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["gstin"] == ""
+    assert response.json()["onboarding_completed"] is True
