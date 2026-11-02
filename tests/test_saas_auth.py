@@ -174,6 +174,9 @@ def test_business_onboarding_save_and_read_is_tenant_scoped(client_and_sessions)
     read_back = client.get("/onboarding/business", headers=first_headers)
     assert read_back.status_code == 200
     assert read_back.json()["gstin"] == "32ABCDE1234F1Z5"
+    assert read_back.json()["erp_setup"]["company"]["name"] == "Acme Wholesale"
+    assert read_back.json()["erp_setup"]["branch"]["name"] == "Kochi Branch"
+    assert read_back.json()["erp_setup"]["warehouse"]["name"] == "Central Warehouse"
 
     other_tenant = client.get("/onboarding/business", headers=second_headers)
     assert other_tenant.status_code == 404
