@@ -126,3 +126,15 @@ Do not claim "fully tested" from a passing unit-test count alone. Manual explora
 3. Build authenticated web shell and role-aware navigation against the SaaS API.
 4. Deliver the core wholesale workflows in vertical slices: customer/product -> purchase/receipt -> stock -> invoice -> payment -> reports.
 5. Add automated UI end-to-end tests and tenant/scope regression tests before broadening module scope.
+
+
+## Current delivery evidence
+
+The first tenant onboarding vertical slice now has:
+- Tenant-scoped business profile persistence, separate from legacy desktop Company records
+- Authenticated GET and owner/admin-only PUT endpoints
+- GSTIN format and GST state-code consistency validation (not live GSTN verification)
+- Automated tests for save/read-back, cross-tenant isolation, invalid GSTIN, state mismatch, and unregistered setup
+- Additive Alembic migration `f3b7d9a2c641`
+
+Not yet implemented: creation/linkage of actual tenant-owned Company, Branch, and Warehouse records; GSTIN verification; email verification; full responsive web onboarding UI. Do not represent these as complete.
