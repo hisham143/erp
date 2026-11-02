@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import (
-    SessionLocal, SaaSIdentity, SaaSRefreshSession, SaaSTenant,
+    SessionLocal, SaaSBusinessProfile, SaaSIdentity, SaaSRefreshSession, SaaSTenant,
     SaaSTenantMembership, hash_password, verify_password,
 )
 from app.saas.security import (
@@ -44,6 +44,20 @@ class LoginRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=40, max_length=200)
+
+
+
+class BusinessOnboardingRequest(BaseModel):
+    trade_name: str = Field(min_length=2, max_length=180)
+    legal_name: str = Field(default="", max_length=180)
+    gstin: str = Field(default="", max_length=15)
+    state_code: str = Field(min_length=2, max_length=2)
+    gst_registration_type: str = Field(default="regular", max_length=30)
+    financial_year_start_month: int = Field(default=4, ge=1, le=12)
+    address: str = Field(default="", max_length=2000)
+    phone: str = Field(default="", max_length=30)
+    first_branch_name: str = Field(default="Main Branch", min_length=2, max_length=180)
+    first_warehouse_name: str = Field(default="Main Warehouse", min_length=2, max_length=180)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -245,6 +259,101 @@ def current_membership(
         "role": membership.role,
     }
 
+
+
+_GSTIN_PATTERN = re.compile(
+    r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
+)
+_GST_REGISTRATION_TYPES = {"regular", "composition", "unregistered", "casual", "sez"}
+
+
+def _business_profile_payload(profile: SaaSBusinessProfile) -> dict:
+    return {
+        "trade_name": profile.trade_name,
+        "legal_name": profile.legal_name,
+        "gstin": profile.gstin,
+        "state_code": profile.state_code,
+        "gst_registration_type": profile.gst_registration_type,
+        "financial_year_start_month": profile.financial_year_start_month,
+        "address": profile.address,
+        "phone": profile.phone,
+        "first_branch_name": profile.first_branch_name,
+        "first_warehouse_name": profile.first_warehouse_name,
+        "onboarding_completed": profile.onboarding_completed,
+    }
+
+
+@app.get("/onboarding/business", tags=["onboarding"])
+def get_business_onboarding(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    profile = session.scalar(select(SaaSBusinessProfile).where(
+        SaaSBusinessProfile.tenant_id == membership["tenant_id"]
+    ))
+    if not profile:
+        raise HTTPException(status_code=404, detail="Business onboarding has not been saved.")
+    return _business_profile_payload(profile)
+
+
+@app.put("/onboarding/business", tags=["onboarding"])
+def save_business_onboarding(
+    payload: BusinessOnboardingRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    if membership["role"] not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Only a tenant owner or admin can edit business setup.")
+
+    trade_name = payload.trade_name.strip()
+    state_code = payload.state_code.strip()
+    gstin = payload.gstin.strip().upper()
+    registration_type = payload.gst_registration_type.strip().lower()
+    if len(trade_name) < 2:
+        raise HTTPException(status_code=422, detail="Enter a valid business name.")
+    if not re.fullmatch(r"[0-9]{2}", state_code):
+        raise HTTPException(status_code=422, detail="State code must contain exactly two digits.")
+    if registration_type not in _GST_REGISTRATION_TYPES:
+        raise HTTPException(status_code=422, detail="Select a supported GST registration type.")
+    if gstin:
+        if not _GSTIN_PATTERN.fullmatch(gstin):
+            raise HTTPException(status_code=422, detail="GSTIN format is invalid.")
+        if gstin[:2] != state_code:
+            raise HTTPException(status_code=422, detail="GSTIN state code must match the selected state.")
+    elif registration_type in {"regular", "composition", "casual", "sez"}:
+        raise HTTPException(status_code=422, detail="Enter GSTIN or select Unregistered.")
+
+    profile = session.scalar(select(SaaSBusinessProfile).where(
+        SaaSBusinessProfile.tenant_id == membership["tenant_id"]
+    ))
+    if profile is None:
+        profile = SaaSBusinessProfile(
+            tenant_id=membership["tenant_id"],
+            trade_name=trade_name,
+            state_code=state_code,
+        )
+        session.add(profile)
+
+    profile.trade_name = trade_name
+    profile.legal_name = payload.legal_name.strip()
+    profile.gstin = gstin
+    profile.state_code = state_code
+    profile.gst_registration_type = registration_type
+    profile.financial_year_start_month = payload.financial_year_start_month
+    profile.address = payload.address.strip()
+    profile.phone = payload.phone.strip()
+    profile.first_branch_name = payload.first_branch_name.strip()
+    profile.first_warehouse_name = payload.first_warehouse_name.strip()
+    profile.onboarding_completed = bool(
+        trade_name and state_code and profile.first_branch_name and profile.first_warehouse_name
+    )
+    try:
+        session.commit()
+        session.refresh(profile)
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Business setup could not be saved.") from exc
+    return _business_profile_payload(profile)
 
 @app.get("/auth/me", tags=["authentication"])
 def me(membership: dict = Depends(current_membership)):
