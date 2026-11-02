@@ -113,3 +113,16 @@ Do not promote a module from prototype to complete until its automated unit, API
 ### Current authentication implementation status
 
 The initial registration/login routes were exercised in the user's local development environment, including a successful tenant registration response. This is not evidence of complete security or production readiness. Email verification, password recovery, rate limiting, MFA, session management UI, security monitoring, and a production secret-management setup remain open requirements.
+
+
+## Tenant business onboarding API (first vertical slice)
+
+The tenant-scoped `saas_business_profiles` table stores onboarding details separately from the legacy desktop `companies` table. This avoids silently mixing SaaS tenant identity with existing desktop company records while the cloud data model is still being designed.
+
+Implemented endpoints:
+- `GET /onboarding/business`: retrieve the authenticated tenant's saved profile; returns 404 until one is saved.
+- `PUT /onboarding/business`: create or update the authenticated tenant's profile; only tenant owner/admin roles may save.
+
+The profile currently captures trade/legal name, GSTIN, two-digit state code, registration type, financial-year start month, address, phone, first branch name, and first warehouse name. GSTIN checks currently validate format and state-code consistency only; they do not verify GST registration with GSTN. The endpoint saves onboarding metadata; it does not yet create records in the legacy `companies`, `branches`, or `warehouses` tables. That integration requires the tenant/company relational design and explicit data-isolation tests.
+
+Migration `f3b7d9a2c641` adds the profile table. Tests cover tenant isolation, persisted read-back, malformed GSTIN, state mismatch, and unregistered businesses.
