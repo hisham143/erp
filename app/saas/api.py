@@ -8,7 +8,7 @@ from typing import Generator
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -183,8 +183,23 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_db)):
         session.commit()
         raise HTTPException(status_code=401, detail="Account or workspace is inactive.")
     try:
-        # Rotate the opaque refresh token: the old token cannot be reused.
-        stored.revoked_at = now
+        # Atomic compare-and-set prevents two concurrent refresh requests from
+        # successfully rotating the same refresh token.
+        rotated = session.execute(
+            update(SaaSRefreshSession)
+            .where(
+                SaaSRefreshSession.id == stored.id,
+                SaaSRefreshSession.revoked_at.is_(None),
+                SaaSRefreshSession.expires_at > now,
+            )
+            .values(revoked_at=now)
+        )
+        if rotated.rowcount != 1:
+            session.rollback()
+            raise HTTPException(
+                status_code=401,
+                detail="Refresh token is invalid or has already been used.",
+            )
         result = _issue_tokens(session, identity, tenant)
         session.commit()
         return result
