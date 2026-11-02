@@ -434,7 +434,13 @@ def get_business_onboarding(
     ))
     if not profile:
         raise HTTPException(status_code=404, detail="Business onboarding has not been saved.")
-    return _business_profile_payload(profile)
+    result = _business_profile_payload(profile)
+    linked = session.scalar(select(SaaSTenantCompany).where(
+        SaaSTenantCompany.tenant_id == membership["tenant_id"]
+    ))
+    if linked:
+        result["erp_setup"] = _erp_setup_payload(session, linked)
+    return result
 
 
 @app.put("/onboarding/business", tags=["onboarding"])
