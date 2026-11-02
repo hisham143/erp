@@ -127,6 +127,27 @@ class SaaSTenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class SaaSTenantCompany(Base):
+    """One-to-one link from a SaaS workspace to its operational ERP company."""
+    __tablename__ = "saas_tenant_companies"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("saas_tenants.id"), nullable=False, unique=True
+    )
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id"), nullable=False, unique=True
+    )
+    branch_id: Mapped[int] = mapped_column(
+        ForeignKey("branches.id"), nullable=False
+    )
+    warehouse_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouses.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
 class SaaSBusinessProfile(Base):
     """Tenant-scoped onboarding profile; separate from legacy desktop Company."""
     __tablename__ = "saas_business_profiles"
