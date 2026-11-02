@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 import app.saas.api as api_module
 from app.db import (
     Base, SaaSIdentity, SaaSTenant, SaaSTenantMembership,
-    SaaSRefreshSession,
+    SaaSRefreshSession, Company, Branch, Warehouse, BusinessSettings, SaaSTenantCompany,
 )
 from app.saas.security import create_access_token, decode_access_token
 
@@ -260,3 +260,53 @@ def test_auth_issues_http_only_refresh_cookie_and_logout_clears_it(client_and_se
     signed_out = client.post("/auth/logout")
     assert signed_out.status_code == 200
     assert client.cookies.get("erp_refresh") is None
+
+
+def test_business_onboarding_creates_operational_erp_hierarchy_once_and_tenant_scoped(client_and_sessions):
+    client, sessions = client_and_sessions
+    first = _register(client, "erp-owner-one@example.com", "ERP Workspace One")
+    second = _register(client, "erp-owner-two@example.com", "ERP Workspace Two")
+    first_headers = {"Authorization": f"Bearer {first['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+    payload = {
+        "trade_name": "Northstar Wholesale",
+        "legal_name": "Northstar Wholesale LLP",
+        "gstin": "",
+        "state_code": "32",
+        "gst_registration_type": "unregistered",
+        "financial_year_start_month": 4,
+        "address": "Kochi, Kerala",
+        "phone": "+919876543210",
+        "first_branch_name": "Kochi Branch",
+        "first_warehouse_name": "Central Warehouse",
+    }
+
+    saved = client.put("/onboarding/business", json=payload, headers=first_headers)
+    assert saved.status_code == 200
+    setup = saved.json()["erp_setup"]
+    assert setup["company"]["name"] == "Northstar Wholesale"
+    assert setup["branch"]["name"] == "Kochi Branch"
+    assert setup["warehouse"]["name"] == "Central Warehouse"
+    setup_read = client.get("/onboarding/erp-setup", headers=first_headers)
+    assert setup_read.status_code == 200
+    assert setup_read.json() == setup
+
+    # Editing the profile updates the linked master records; it must not duplicate them.
+    payload["trade_name"] = "Northstar Wholesale Updated"
+    updated = client.put("/onboarding/business", json=payload, headers=first_headers)
+    assert updated.status_code == 200
+    assert updated.json()["erp_setup"]["company"]["id"] == setup["company"]["id"]
+
+    with sessions() as session:
+        assert len(session.scalars(select(Company)).all()) == 1
+        assert len(session.scalars(select(Branch)).all()) == 1
+        assert len(session.scalars(select(Warehouse)).all()) == 1
+        assert len(session.scalars(select(BusinessSettings)).all()) == 1
+        assert len(session.scalars(select(SaaSTenantCompany)).all()) == 1
+        assert session.get(Company, setup["company"]["id"]).name == "Northstar Wholesale Updated"
+
+    # A second tenant cannot see the first tenant's operational company mapping.
+    assert client.get("/onboarding/erp-setup", headers=second_headers).status_code == 404
+    second_saved = client.put("/onboarding/business", json=payload, headers=second_headers)
+    assert second_saved.status_code == 200
+    assert second_saved.json()["erp_setup"]["company"]["id"] != setup["company"]["id"]
