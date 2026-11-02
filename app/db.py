@@ -127,6 +127,31 @@ class SaaSTenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class SaaSBusinessProfile(Base):
+    """Tenant-scoped onboarding profile; separate from legacy desktop Company."""
+    __tablename__ = "saas_business_profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("saas_tenants.id"), unique=True, nullable=False
+    )
+    trade_name: Mapped[str] = mapped_column(String(180), nullable=False)
+    legal_name: Mapped[str] = mapped_column(String(180), default="", nullable=False)
+    gstin: Mapped[str] = mapped_column(String(15), default="", nullable=False)
+    state_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    gst_registration_type: Mapped[str] = mapped_column(
+        String(30), default="regular", nullable=False
+    )
+    financial_year_start_month: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    address: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    phone: Mapped[str] = mapped_column(String(30), default="", nullable=False)
+    first_branch_name: Mapped[str] = mapped_column(String(180), default="Main Branch", nullable=False)
+    first_warehouse_name: Mapped[str] = mapped_column(String(180), default="Main Warehouse", nullable=False)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
 class SaaSIdentity(Base):
     __tablename__ = "saas_identities"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
