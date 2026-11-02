@@ -95,6 +95,8 @@ def test_owner_can_register_onboard_and_sign_in_again(running_web_app):
         assert workspace_code.startswith("playwright-wholesale-")
 
         # A hard reload clears in-memory tokens; the owner must authenticate again.
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert page.evaluate("getComputedStyle(document.querySelector('.app-frame')).display") == "block"
         page.reload(wait_until="networkidle")
         page.locator("#login-form").wait_for(state="visible")
         page.locator('#login-form input[name="email"]').fill("owner@playwright.test")
@@ -103,5 +105,8 @@ def test_owner_can_register_onboard_and_sign_in_again(running_web_app):
         page.locator('#login-form button[type="submit"]').click()
         page.locator("#complete-view").wait_for(state="visible")
         assert "Playwright Traders" in page.locator("#complete-summary").inner_text()
+        assert page.evaluate("getComputedStyle(document.querySelector('.app-frame')).display") == "block"
+        page.set_viewport_size({"width": 768, "height": 1024})
+        assert page.evaluate("getComputedStyle(document.querySelector('.app-frame')).display") == "grid"
         assert page.locator("body").inner_text().count("Business profile saved") == 0
         browser.close()
