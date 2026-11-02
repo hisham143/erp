@@ -59,7 +59,7 @@ def _normal_email(value: str) -> str:
 
 
 def _slug(value: str) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")[: sixty := 60]
+    base = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")[:60]
     return f"{base or 'business'}-{create_refresh_token()[:6].lower()}"
 
 
