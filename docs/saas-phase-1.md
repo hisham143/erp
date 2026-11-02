@@ -19,15 +19,16 @@ Prepare the existing desktop ERP codebase for a separate hosted API without disr
 
 - app/saas/config.py resolves ERP_DATABASE_URL, defaulting to the existing gst_billing.db SQLite file.
 - app/db.py creates its SQLAlchemy engine using dialect-aware options. Desktop installs continue to use SQLite unless the environment variable is explicitly set.
-- app/saas/api.py provides GET /health/live and GET /health/ready.
-- requirements.txt includes FastAPI, Uvicorn, and Psycopg 3.
-- tests/test_saas_config.py checks SQLite and PostgreSQL engine options.
+- app/saas/api.py provides health endpoints plus development-only tenant registration, login, refresh, and authenticated profile routes.
+- SaaS identity models are separate from the legacy desktop users table.
+- Alembic migration `e6a4c9b1d732` adds tenant, identity, membership, and refresh-session tables after the stock-transfer migration.
+- `tests/test_saas_config.py` checks SQLite and PostgreSQL engine options; `tests/test_saas_auth.py` covers registration, login, token rotation, and protected profile access.
 - docs/saas-product-blueprint.md captures the product and architecture direction.
 
 ## Important safety boundaries
 
 - Do not point ERP_DATABASE_URL at a production database until tenant migrations, authentication, authorization, backups, and restore testing are complete.
-- The current API intentionally has no login or business-data endpoints. Do not expose it publicly as a usable SaaS product yet.
+- Authentication is an early development foundation only. It is not a complete production identity service; do not expose it publicly as a usable SaaS product yet.
 - Do not call init_db() from the hosted API. Production schema changes must use reviewed Alembic migrations.
 - Do not use the desktop default admin credentials for hosted tenants.
 - Do not migrate or delete local customer data during Phase 1. Existing SQLite database and backups remain untouched.
@@ -101,3 +102,14 @@ Copy the generated value locally (do not share it), then:
 Use the interactive API documentation at `http://127.0.0.1:8000/docs` to exercise registration, login, refresh, and `/auth/me`.
 
 This is a development foundation, not a public-launch-ready identity service. Email verification, password reset, MFA, login/registration rate limiting, abuse controls, security event monitoring, tenant lifecycle administration, and production secret management remain required before public exposure. Do not deploy this API publicly or point it at production data.
+
+
+## Reference-driven UI and quality gate
+
+The uploaded Aster ERP image and interactive HTML are reference-only. The detailed review, module inventory, prototype limitations, UI acceptance rules, phased scope, and automated quality gates are recorded in `docs/aster-erp-reference-audit.md`.
+
+Do not promote a module from prototype to complete until its automated unit, API integration, authorization/scope, database, UI end-to-end, and desktop regression tests pass. Tests must include negative cases (unauthenticated, unauthorized, cross-tenant, cross-company/branch/warehouse) and validation/rollback cases. Manual testing can supplement but never substitute for automated gates. External integrations without a sandbox must remain explicitly unverified.
+
+### Current authentication implementation status
+
+The initial registration/login routes were exercised in the user's local development environment, including a successful tenant registration response. This is not evidence of complete security or production readiness. Email verification, password recovery, rate limiting, MFA, session management UI, security monitoring, and a production secret-management setup remain open requirements.
