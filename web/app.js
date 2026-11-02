@@ -42,7 +42,6 @@
   }
   function setSession(data) {
     state.accessToken = data.access_token;
-    state.refreshToken = data.refresh_token;
     state.tenant = data.tenant;
     state.user = data.user;
     $("workspace-label").textContent = data.tenant.name;
@@ -160,9 +159,9 @@
   });
   async function signOut() {
     try {
-      if (state.refreshToken) await fetch("/auth/logout",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refresh_token:state.refreshToken})});
+      await fetch("/auth/logout",{method:"POST",credentials:"same-origin"});
     } finally {
-      state.accessToken = null; state.refreshToken = null; state.tenant = null; state.user = null; state.profile = null;
+      state.accessToken = null; state.tenant = null; state.user = null; state.profile = null;
       $("user-label").textContent = "Not signed in"; $("avatar").textContent = "E"; $("workspace-label").textContent = "Your workspace";
       selectTab("login"); show("auth-view"); notice("You have signed out.", "success");
     }
@@ -170,4 +169,14 @@
   $("signout-button").addEventListener("click", signOut);
   $("signout-complete-button").addEventListener("click", signOut);
   show("auth-view");
+  // Restore the session after a reload by rotating the HttpOnly refresh cookie.
+  (async () => {
+    try {
+      const restored = await api("/auth/refresh", {method:"POST", credentials:"same-origin"});
+      setSession(restored);
+      await enterWorkspace();
+    } catch (_) {
+      // No valid cookie means this is a signed-out browser; keep the login screen.
+    }
+  })();
 })();
