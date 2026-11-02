@@ -126,3 +126,20 @@ Implemented endpoints:
 The profile currently captures trade/legal name, GSTIN, two-digit state code, registration type, financial-year start month, address, phone, first branch name, and first warehouse name. GSTIN checks currently validate format and state-code consistency only; they do not verify GST registration with GSTN. The endpoint saves onboarding metadata; it does not yet create records in the legacy `companies`, `branches`, or `warehouses` tables. That integration requires the tenant/company relational design and explicit data-isolation tests.
 
 Migration `f3b7d9a2c641` adds the profile table. Tests cover tenant isolation, persisted read-back, malformed GSTIN, state mismatch, and unregistered businesses.
+
+
+## ERP Cloud web entry and onboarding UI (development preview)
+
+A responsive static frontend is served by the same FastAPI application:
+- `/`: sign-in and create-workspace interface
+- `/web-assets/app.css`: responsive Aster-inspired design system
+- `/web-assets/app.js`: API-connected form behavior
+- Authenticated onboarding form saves/loads the tenant business profile through the SaaS API.
+- The workspace slug is displayed for later sign-in.
+- Sign-out revokes the current refresh session through `POST /auth/logout`.
+
+The browser keeps access and refresh tokens in memory only; reloading the page requires signing in again. This avoids putting bearer or refresh tokens in localStorage, but a production web deployment should move to secure HttpOnly, Secure, SameSite cookies with CSRF protections and a reviewed session architecture.
+
+The frontend currently provides authentication, business profile setup, and a saved-profile confirmation only. It does not yet create operational Company/Branch/Warehouse records, show live business KPIs, or expose incomplete ERP modules. It is a development preview, not a production-ready public login service.
+
+Automated API tests also check that the web page and static assets are served and that logout revokes the refresh token. Browser-based Playwright coverage remains a separate required gate before calling the responsive UI fully verified.
