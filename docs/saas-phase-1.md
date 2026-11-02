@@ -143,3 +143,17 @@ The browser keeps access and refresh tokens in memory only; reloading the page r
 The frontend currently provides authentication, business profile setup, and a saved-profile confirmation only. It does not yet create operational Company/Branch/Warehouse records, show live business KPIs, or expose incomplete ERP modules. It is a development preview, not a production-ready public login service.
 
 Automated API tests also check that the web page and static assets are served and that logout revokes the refresh token. Browser-based Playwright coverage remains a separate required gate before calling the responsive UI fully verified.
+
+
+### Browser test command
+
+Install the optional browser test dependency and Chromium:
+
+    python -m pip install -r requirements-ui-test.txt
+    python -m playwright install chromium
+
+Run the full suite:
+
+    python -m pytest -q
+
+The Playwright test starts an isolated temporary SQLite-backed API process and checks registration, business setup save/read, workspace-code sign-in after reload, and responsive layout behavior at mobile (390px) and tablet (768px) widths. It does not connect to or modify the user's desktop database.
