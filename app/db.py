@@ -130,9 +130,10 @@ class SaaSTenant(Base):
 class SaaSBusinessProfile(Base):
     """Tenant-scoped onboarding profile; separate from legacy desktop Company."""
     __tablename__ = "saas_business_profiles"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_saas_business_profile_tenant"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
-        ForeignKey("saas_tenants.id"), unique=True, nullable=False
+        ForeignKey("saas_tenants.id"), nullable=False
     )
     trade_name: Mapped[str] = mapped_column(String(180), nullable=False)
     legal_name: Mapped[str] = mapped_column(String(180), default="", nullable=False)
