@@ -1,0 +1,61 @@
+name: ERP automated quality gates
+
+on:
+  push:
+    branches: [feature/erp-foundation]
+  pull_request:
+    branches: [feature/erp-foundation]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ERP_DATABASE_URL: sqlite:///./ci_erp_test.db
+      ERP_ALEMBIC_DATABASE_URL: sqlite:///./ci_erp_test.db
+      ERP_AUTH_SECRET: ci-only-secret-that-is-never-used-in-production-123456
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile application and tests
+        run: python -m compileall -q app tests
+
+      - name: Run automated test suite
+        run: python -m pytest -q
+
+      - name: Apply migrations to disposable CI database
+        run: python -m alembic upgrade head
+
+      - name: Check migration/model drift
+        run: python -m alembic check
+
+      - name: Verify migrated schema contains SaaS identity tables
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, inspect
+          engine = create_engine(os.environ["ERP_DATABASE_URL"])
+          tables = set(inspect(engine).get_table_names())
+          required = {
+              "saas_tenants",
+              "saas_identities",
+              "saas_tenant_memberships",
+              "saas_refresh_sessions",
+          }
+          missing = required - tables
+          assert not missing, f"Missing SaaS tables: {sorted(missing)}"
+          print("SaaS identity schema verified.")
+          PY
