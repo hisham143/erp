@@ -59,7 +59,13 @@ The addressable market is India-wide, but the first release should focus on a na
 
 Regulated GST capabilities must be validated against current Indian rules and tested with a qualified GST practitioner before being marketed as compliant. Integrations must use authorized providers and applicable government interfaces.
 
-## 5. UX principles
+## 5. Full product module map and delivery phases
+
+The Aster ERP reference review is documented in `docs/aster-erp-reference-audit.md`. It captures all 21 business/workspace navigation areas shown in the uploaded HTML and separates the first commercial MVP from later modules. The reference includes CRM, Sales, Purchase, Inventory, POS, Manufacturing, Quality, Accounting, GST, Banking, Fixed Assets, HR, Payroll, Projects, Logistics, Service Desk, Documents, Reports, Users/Roles, Settings, and Subscription.
+
+Do not ship all of these as shallow screens in one release. Deliver a complete wholesale/distribution core first, then add POS, manufacturing, quality, full accounting, banking, assets, HR/payroll, projects, logistics, service desk, and advanced documents/analytics in validated phases. Every module must have persisted backend workflows and automated acceptance tests; a visible menu item or demo interaction is not feature completion.
+
+## 6. UX principles
 
 - First-run setup should guide the owner through business identity, GST details, financial year, first branch, warehouse, and opening stock.
 - Common tasks should be reachable in a few obvious steps.
@@ -70,7 +76,7 @@ Regulated GST capabilities must be validated against current Indian rules and te
 - Do not hide important actions in ambiguous icons; label actions such as Transfer Stock, Record Payment, and Create Invoice.
 - Provide import previews and validation before any bulk data is committed.
 
-## 6. Proposed technical architecture
+## 7. Proposed technical architecture
 
 - **Web:** Next.js / React, responsive design system.
 - **Mobile:** React Native, sharing API contracts and business terminology with web.
@@ -83,7 +89,7 @@ Regulated GST capabilities must be validated against current Indian rules and te
 - **Operations:** Managed PostgreSQL, secrets manager, TLS, centralized logs/metrics, error monitoring, backups, point-in-time recovery, and tested restore procedures.
 - **Payments:** Integrate an India-capable payment gateway after pricing, tax treatment, and subscription lifecycle are finalized.
 
-## 7. Multi-tenancy and data isolation
+## 8. Multi-tenancy and data isolation
 
 A tenant represents one customer account/organization on the SaaS platform. A tenant may own multiple companies; each company may contain branches and warehouses. A user may belong to one or more tenants and receive scoped roles.
 
@@ -97,7 +103,7 @@ Important current-repository gaps to resolve before customer data is hosted:
 - Existing init_db() performs create_all, ad-hoc ALTERs, and creates a known default admin account. Hosted deployments must use reviewed Alembic migrations and a secure tenant-owner bootstrap instead.
 - Existing local audit and access patterns are a useful start but are not yet a complete SaaS security boundary.
 
-## 8. Commercial packaging (hypotheses to validate)
+## 9. Commercial packaging (hypotheses to validate)
 
 | Plan concept | Indicative monthly price | Intended fit |
 |---|---:|---|
@@ -110,10 +116,17 @@ These are research hypotheses, not final prices. Validate willingness to pay, su
 
 Potential packaging limits: users, branches, companies, monthly documents, storage, and premium integrations. Avoid hard limits that make core stock/accounting data unsafe or inaccessible.
 
-## 9. Launch and success measures
+## 10. Launch and success measures
 
 Start with 5–10 design-partner businesses. Observe onboarding completion, time to first invoice, weekly active businesses, invoice volume, stock accuracy, support requests, retention, and paid conversion. Expand only after backup/restore, tenant isolation, auditability, and core accounting workflows pass acceptance tests.
 
-## 10. Brand work
+## 11. Brand work
 
 Do not settle a brand name until domain availability, pronunciation in Indian languages, relevant trademark classes, and conflicting software/company names have been screened. Keep the repository and internal project name neutral until then.
+
+
+## 12. Quality and release policy
+
+Automated testing is a release gate, not a final optional activity. Each vertical slice must include unit tests for business rules, API integration tests, tenant and company/branch/warehouse negative authorization tests, database constraint and transaction tests, migration tests on disposable databases, UI end-to-end tests at desktop and mobile sizes, and regression tests for the Windows desktop application. Static checks and Alembic drift checks are also required. A passing test suite must be accompanied by reproducible logs; tests that cannot run because a third-party sandbox is unavailable must be marked unverified rather than passed.
+
+The detailed test matrix and reference-derived screen acceptance criteria live in `docs/aster-erp-reference-audit.md`.
