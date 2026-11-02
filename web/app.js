@@ -76,6 +76,11 @@
       ["Workspace code",state.tenant.slug],["Business",profile.trade_name],["GSTIN",profile.gstin || "Unregistered"],
       ["State",stateOptions.find(x => x[0] === profile.state_code)?.[1] || profile.state_code],
       ["Branch",profile.first_branch_name],["Warehouse",profile.first_warehouse_name],
+      ...(profile.erp_setup ? [
+        ["ERP company ID",String(profile.erp_setup.company.id)],
+        ["ERP branch ID",String(profile.erp_setup.branch.id)],
+        ["ERP warehouse ID",String(profile.erp_setup.warehouse.id)]
+      ] : []),
       ["Financial year",profile.financial_year_start_month === 4 ? "April – March" : "January – December"]
     ];
     $("complete-details").replaceChildren(...entries.map(([label,value]) => {
