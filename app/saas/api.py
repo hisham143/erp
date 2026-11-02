@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Generator
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text, update
@@ -222,6 +225,21 @@ def refresh(payload: RefreshRequest, session: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+
+@app.post("/auth/logout", tags=["authentication"])
+def logout(payload: RefreshRequest, session: Session = Depends(get_db)):
+    """Revoke the supplied refresh session. Safe to call more than once."""
+    token_hash = hash_refresh_token(payload.refresh_token)
+    stored = session.scalar(select(SaaSRefreshSession).where(
+        SaaSRefreshSession.token_hash == token_hash,
+        SaaSRefreshSession.revoked_at.is_(None),
+    ))
+    if stored:
+        stored.revoked_at = datetime.utcnow()
+        session.commit()
+    return {"status": "signed_out"}
+
+
 def current_membership(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_db),
@@ -358,3 +376,12 @@ def save_business_onboarding(
 @app.get("/auth/me", tags=["authentication"])
 def me(membership: dict = Depends(current_membership)):
     return membership
+
+
+_WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
+app.mount("/web-assets", StaticFiles(directory=str(_WEB_ROOT)), name="web-assets")
+
+
+@app.get("/", include_in_schema=False)
+def web_app():
+    return FileResponse(_WEB_ROOT / "index.html")
