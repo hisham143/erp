@@ -17,8 +17,9 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import (
-    SessionLocal, SaaSBusinessProfile, SaaSIdentity, SaaSRefreshSession, SaaSTenant,
-    SaaSTenantMembership, hash_password, verify_password,
+    SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
+    SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
+    SaaSTenantMembership, Warehouse, hash_password, verify_password,
 )
 from app.saas.security import (
     ACCESS_TOKEN_SECONDS, REFRESH_TOKEN_DAYS, create_access_token,
@@ -315,6 +316,98 @@ _GSTIN_PATTERN = re.compile(
 _GST_REGISTRATION_TYPES = {"regular", "composition", "unregistered", "casual", "sez"}
 
 
+def _ensure_operational_company(
+    session: Session, tenant_id: int, profile: SaaSBusinessProfile
+) -> SaaSTenantCompany:
+    """Create the operational company hierarchy once, within the profile transaction."""
+    linked = session.scalar(select(SaaSTenantCompany).where(
+        SaaSTenantCompany.tenant_id == tenant_id
+    ))
+    if linked:
+        company = session.get(Company, linked.company_id)
+        branch = session.get(Branch, linked.branch_id)
+        warehouse = session.get(Warehouse, linked.warehouse_id)
+        if not company or not branch or not warehouse:
+            raise HTTPException(
+                status_code=409,
+                detail="Workspace ERP setup is incomplete; contact support before retrying.",
+            )
+        # Keep operational master details aligned when an owner edits onboarding.
+        company.name = profile.trade_name
+        company.legal_name = profile.legal_name
+        company.gstin = profile.gstin
+        company.state_code = profile.state_code
+        company.address = profile.address
+        company.phone = profile.phone
+        branch.name = profile.first_branch_name
+        branch.address = profile.address
+        branch.phone = profile.phone
+        warehouse.name = profile.first_warehouse_name
+        settings = session.scalar(select(BusinessSettings).where(
+            BusinessSettings.company_id == company.id
+        ))
+        if settings is None:
+            settings = BusinessSettings(company_id=company.id)
+            session.add(settings)
+        settings.legal_name = profile.legal_name or profile.trade_name
+        settings.gstin = profile.gstin
+        settings.state_code = profile.state_code
+        settings.address = profile.address
+        settings.phone = profile.phone
+        return linked
+
+    company = Company(
+        name=profile.trade_name,
+        legal_name=profile.legal_name,
+        gstin=profile.gstin,
+        state_code=profile.state_code,
+        address=profile.address,
+        phone=profile.phone,
+        active=True,
+    )
+    session.add(company)
+    session.flush()
+    branch = Branch(
+        company_id=company.id, name=profile.first_branch_name,
+        code="MAIN", address=profile.address, phone=profile.phone, active=True,
+    )
+    session.add(branch)
+    session.flush()
+    warehouse = Warehouse(
+        company_id=company.id, branch_id=branch.id,
+        name=profile.first_warehouse_name, code="MAIN", address=profile.address,
+        active=True,
+    )
+    session.add(warehouse)
+    session.add(BusinessSettings(
+        company_id=company.id,
+        legal_name=profile.legal_name or profile.trade_name,
+        gstin=profile.gstin, state_code=profile.state_code,
+        address=profile.address, phone=profile.phone,
+    ))
+    session.flush()
+    linked = SaaSTenantCompany(
+        tenant_id=tenant_id, company_id=company.id,
+        branch_id=branch.id, warehouse_id=warehouse.id,
+    )
+    session.add(linked)
+    session.flush()
+    return linked
+
+
+def _erp_setup_payload(session: Session, linked: SaaSTenantCompany) -> dict:
+    company = session.get(Company, linked.company_id)
+    branch = session.get(Branch, linked.branch_id)
+    warehouse = session.get(Warehouse, linked.warehouse_id)
+    return {
+        "company": {"id": company.id, "name": company.name},
+        "branch": {"id": branch.id, "name": branch.name, "code": branch.code},
+        "warehouse": {
+            "id": warehouse.id, "name": warehouse.name, "code": warehouse.code
+        },
+    }
+
+
 def _business_profile_payload(profile: SaaSBusinessProfile) -> dict:
     return {
         "trade_name": profile.trade_name,
@@ -396,12 +489,28 @@ def save_business_onboarding(
         trade_name and state_code and profile.first_branch_name and profile.first_warehouse_name
     )
     try:
+        session.flush()
+        linked = _ensure_operational_company(session, membership["tenant_id"], profile)
         session.commit()
         session.refresh(profile)
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Business setup could not be saved.") from exc
-    return _business_profile_payload(profile)
+    result = _business_profile_payload(profile)
+    result["erp_setup"] = _erp_setup_payload(session, linked)
+    return result
+
+@app.get("/onboarding/erp-setup", tags=["onboarding"])
+def get_erp_setup(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = session.scalar(select(SaaSTenantCompany).where(
+        SaaSTenantCompany.tenant_id == membership["tenant_id"]
+    ))
+    if not linked:
+        raise HTTPException(status_code=404, detail="ERP company setup is not complete.")
+    return _erp_setup_payload(session, linked)
 
 @app.get("/auth/me", tags=["authentication"])
 def me(membership: dict = Depends(current_membership)):
