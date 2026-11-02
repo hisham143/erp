@@ -54,6 +54,7 @@ jobs:
               "saas_identities",
               "saas_tenant_memberships",
               "saas_refresh_sessions",
+              "saas_business_profiles",
           }
           missing = required - tables
           assert not missing, f"Missing SaaS tables: {sorted(missing)}"
