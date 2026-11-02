@@ -239,3 +239,24 @@ def test_logout_revokes_refresh_token(client_and_sessions):
         "refresh_token": registered["refresh_token"]
     })
     assert replay.status_code == 401
+
+
+def test_auth_issues_http_only_refresh_cookie_and_logout_clears_it(client_and_sessions):
+    client, _ = client_and_sessions
+    registered = _register(client, "cookie-session@example.com", "Cookie Session Workspace")
+    cookie = client.cookies.get("erp_refresh")
+    assert cookie == registered["refresh_token"]
+    set_cookie = client.cookies.jar
+    assert any(
+        item.name == "erp_refresh" and item.has_nonstandard_attr("HttpOnly")
+        for item in set_cookie
+    )
+
+    refreshed = client.post("/auth/refresh")
+    assert refreshed.status_code == 200
+    assert client.cookies.get("erp_refresh") == refreshed.json()["refresh_token"]
+    assert client.cookies.get("erp_refresh") != registered["refresh_token"]
+
+    signed_out = client.post("/auth/logout")
+    assert signed_out.status_code == 200
+    assert client.cookies.get("erp_refresh") is None
