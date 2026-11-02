@@ -46,6 +46,8 @@
     state.tenant = data.tenant;
     state.user = data.user;
     $("workspace-label").textContent = data.tenant.name;
+    $("workspace-code").textContent = data.tenant.slug;
+    $("login-form").elements.namedItem("tenant_slug").value = data.tenant.slug;
     $("user-label").textContent = data.user.name;
     $("avatar").textContent = (data.user.name || "E").trim().charAt(0).toUpperCase();
   }
@@ -72,7 +74,7 @@
     state.profile = profile;
     $("complete-summary").textContent = profile.trade_name + " is saved in " + state.tenant.name + ".";
     const entries = [
-      ["Business",profile.trade_name],["GSTIN",profile.gstin || "Unregistered"],
+      ["Workspace code",state.tenant.slug],["Business",profile.trade_name],["GSTIN",profile.gstin || "Unregistered"],
       ["State",stateOptions.find(x => x[0] === profile.state_code)?.[1] || profile.state_code],
       ["Branch",profile.first_branch_name],["Warehouse",profile.first_warehouse_name],
       ["Financial year",profile.financial_year_start_month === 4 ? "April – March" : "January – December"]
