@@ -138,7 +138,7 @@ A responsive static frontend is served by the same FastAPI application:
 - The workspace slug is displayed for later sign-in.
 - Sign-out revokes the current refresh session through `POST /auth/logout`.
 
-The browser keeps access and refresh tokens in memory only; reloading the page requires signing in again. This avoids putting bearer or refresh tokens in localStorage, but a production web deployment should move to secure HttpOnly, Secure, SameSite cookies with CSRF protections and a reviewed session architecture.
+The browser keeps the short-lived access token in memory and the rotating refresh token in an HttpOnly, SameSite=Lax cookie scoped to `/auth`. On reload, the frontend calls `/auth/refresh`, rotates the refresh cookie, and restores the signed-in tenant without asking for credentials again. Logout revokes the refresh session and clears the cookie. Set `ERP_COOKIE_SECURE=1` behind HTTPS in production; local HTTP development defaults this flag off. SameSite is a defense-in-depth measure, not a complete CSRF review; before public launch, add explicit Origin/CSRF protections, rate limiting, secure secret management, email verification, and session management controls.
 
 The frontend currently provides authentication, business profile setup, and a saved-profile confirmation only. It does not yet create operational Company/Branch/Warehouse records, show live business KPIs, or expose incomplete ERP modules. It is a development preview, not a production-ready public login service.
 
@@ -156,4 +156,4 @@ Run the full suite:
 
     python -m pytest -q
 
-The Playwright test starts an isolated temporary SQLite-backed API process and checks registration, business setup save/read, workspace-code sign-in after reload, and responsive layout behavior at mobile (390px) and tablet (768px) widths. It does not connect to or modify the user's desktop database.
+The Playwright test starts an isolated temporary SQLite-backed API process and checks registration, business setup save/read, automatic HttpOnly-cookie session restoration after reload and explicit sign-out/login, and responsive layout behavior at mobile (390px) and tablet (768px) widths. It does not connect to or modify the user's desktop database.
