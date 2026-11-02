@@ -47,6 +47,22 @@ Install the expanded dependencies:
 python -m pip install -r requirements.txt
 ```
 
+Run the local API and open the ERP Cloud web interface at `http://127.0.0.1:8000/`:
+
+```powershell
+uvicorn app.saas.api:app --host 127.0.0.1 --port 8000
+```
+
+The root URL serves the development sign-in and business-onboarding UI. API documentation remains at `http://127.0.0.1:8000/docs`. The UI currently covers tenant registration, sign-in, and tenant business-profile onboarding; it is not yet the full ERP dashboard or a production-ready public login service.
+
+For real-browser automated UI tests, install the optional test dependency and browser:
+
+```powershell
+python -m pip install -r requirements-ui-test.txt
+python -m playwright install chromium
+python -m pytest -q
+```
+
 Run the local API:
 
 ```powershell
