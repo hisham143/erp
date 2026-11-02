@@ -98,6 +98,12 @@ def test_owner_can_register_onboard_and_sign_in_again(running_web_app):
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("getComputedStyle(document.querySelector('.app-frame')).display") == "block"
         page.reload(wait_until="networkidle")
+        # HttpOnly refresh cookie should restore the session without asking for login.
+        page.locator("#complete-view").wait_for(state="visible")
+        assert "Playwright Traders" in page.locator("#complete-summary").inner_text()
+
+        # Explicit sign-out clears the cookie; a later login still works.
+        page.locator("#signout-complete-button").click()
         page.locator("#login-form").wait_for(state="visible")
         page.locator('#login-form input[name="email"]').fill("owner@playwright.test")
         page.locator('#login-form input[name="password"]').fill("Strong-Password-123")
