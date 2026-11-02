@@ -88,6 +88,9 @@ def test_owner_can_register_onboard_and_sign_in_again(running_web_app):
         page.locator("#business-form button[type='submit']").click()
         page.locator("#complete-view").wait_for(state="visible")
         assert "Playwright Traders" in page.locator("#complete-summary").inner_text()
+        assert page.locator(".detail-cell").filter(has_text="ERP company ID").count() == 1
+        assert page.locator(".detail-cell").filter(has_text="ERP branch ID").count() == 1
+        assert page.locator(".detail-cell").filter(has_text="ERP warehouse ID").count() == 1
 
         workspace_code = page.locator(".detail-cell").filter(
             has_text="Workspace code"
