@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -48,6 +49,11 @@ def decode_access_token(token: str) -> dict:
         expected = _b64(hmac.new(_secret(), signing_input, hashlib.sha256).digest())
         if not hmac.compare_digest(signature, expected):
             raise ValueError("Invalid token signature.")
+        header_data = json.loads(
+            base64.urlsafe_b64decode(header + "=" * (-len(header) % 4))
+        )
+        if header_data != {"alg": "HS256", "typ": "JWT"}:
+            raise ValueError("Unsupported token header.")
         payload = json.loads(
             base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
         )
@@ -56,7 +62,7 @@ def decode_access_token(token: str) -> dict:
         if not payload.get("sub") or not payload.get("tid"):
             raise ValueError("Invalid token claims.")
         return payload
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error) as exc:
         raise ValueError("Invalid or expired access token.") from exc
 
 
