@@ -485,6 +485,7 @@ def test_sales_invoice_api_calculates_gst_and_scopes_records_to_tenant(client_an
 
 
 def test_sales_invoice_rejects_invalid_lines_without_partial_records(client_and_sessions):
+    from decimal import Decimal
     from app.db import Customer, Product, Invoice
     client, sessions = client_and_sessions
     owner = _register(client, "sales-invalid@example.com", "Sales Invalid Workspace")
@@ -511,6 +512,8 @@ def test_sales_invoice_rejects_invalid_lines_without_partial_records(client_and_
 
 
 def test_sales_invoice_requires_sales_permission_and_authentication(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Customer, Product
     client, sessions = client_and_sessions
     owner = _register(client, "sales-permission@example.com", "Sales Permission Workspace")
     setup = _save_unregistered_profile(client, owner["access_token"], "Sales Permission Company")
