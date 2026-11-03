@@ -113,6 +113,37 @@ class JournalEntryRequest(BaseModel):
     lines: list[JournalLineRequest] = Field(min_length=2, max_length=100)
 
 
+
+class CustomerCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    gstin: str = Field(default="", max_length=15)
+    state_code: str = Field(min_length=2, max_length=2)
+    address: str = Field(default="", max_length=2000)
+    phone: str = Field(default="", max_length=30)
+    email: str = Field(default="", max_length=180)
+    credit_limit: Decimal = Field(default=Decimal("10000"), ge=0, max_digits=14, decimal_places=2)
+
+
+class SupplierCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    gstin: str = Field(default="", max_length=15)
+    state_code: str = Field(min_length=2, max_length=2)
+    address: str = Field(default="", max_length=2000)
+    phone: str = Field(default="", max_length=30)
+
+
+class ProductCreateRequest(BaseModel):
+    sku: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=2, max_length=180)
+    hsn_sac: str = Field(default="", max_length=20)
+    unit: str = Field(default="Nos", max_length=20)
+    selling_price: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    purchase_price: Decimal = Field(default=Decimal("0"), ge=0, max_digits=12, decimal_places=2)
+    gst_rate: Decimal = Field(default=Decimal("18"), ge=0, le=100, max_digits=5, decimal_places=2)
+    opening_stock: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=3)
+    reorder_level: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=3)
+
+
 class MembershipRoleRequest(BaseModel):
     role: str = Field(min_length=3, max_length=30)
 
@@ -1830,6 +1861,62 @@ def get_cash_bank_summary(
             "note": "This is a cash/bank ledger movement summary, not a classified statutory cash flow statement."}
 
 
+
+@app.post("/erp/customers", status_code=status.HTTP_201_CREATED, tags=["erp"])
+def create_erp_customer(payload: CustomerCreateRequest, membership: dict = Depends(current_membership), session: Session = Depends(get_db)):
+    _require_roles(membership, "owner", "admin", "manager", "sales")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    customer = Customer(company_id=linked.company_id, name=payload.name.strip(), gstin=payload.gstin.strip().upper(),
+        state_code=payload.state_code, address=payload.address, phone=payload.phone, email=payload.email,
+        credit_limit=payload.credit_limit, active=True)
+    session.add(customer)
+    session.flush()
+    session.add(AuditLog(company_id=linked.company_id, username=membership["email"][:80], action="customer_created",
+        entity_type="Customer", entity_id=str(customer.id), details=json.dumps({"name": customer.name})))
+    session.commit()
+    return {"id": customer.id, "name": customer.name, "gstin": customer.gstin, "state_code": customer.state_code, "phone": customer.phone, "email": customer.email, "active": customer.active}
+
+
+@app.post("/erp/suppliers", status_code=status.HTTP_201_CREATED, tags=["erp"])
+def create_erp_supplier(payload: SupplierCreateRequest, membership: dict = Depends(current_membership), session: Session = Depends(get_db)):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    supplier = Supplier(company_id=linked.company_id, name=payload.name.strip(), gstin=payload.gstin.strip().upper(),
+        state_code=payload.state_code, address=payload.address, phone=payload.phone, active=True)
+    session.add(supplier)
+    session.flush()
+    session.add(AuditLog(company_id=linked.company_id, username=membership["email"][:80], action="supplier_created",
+        entity_type="Supplier", entity_id=str(supplier.id), details=json.dumps({"name": supplier.name})))
+    session.commit()
+    return {"id": supplier.id, "name": supplier.name, "gstin": supplier.gstin, "state_code": supplier.state_code, "phone": supplier.phone, "active": supplier.active}
+
+
+@app.post("/erp/products", status_code=status.HTTP_201_CREATED, tags=["erp"])
+def create_erp_product(payload: ProductCreateRequest, membership: dict = Depends(current_membership), session: Session = Depends(get_db)):
+    _require_roles(membership, "owner", "admin", "manager")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    sku = payload.sku.strip().upper()
+    if session.scalar(select(Product.id).where(Product.sku == sku)):
+        raise HTTPException(status_code=409, detail="This SKU is already in use.")
+    product = Product(company_id=linked.company_id, sku=sku, name=payload.name.strip(), hsn_sac=payload.hsn_sac,
+        unit=payload.unit, selling_price=payload.selling_price, purchase_price=payload.purchase_price,
+        gst_rate=payload.gst_rate, stock_qty=payload.opening_stock, reorder_level=payload.reorder_level, active=True)
+    session.add(product)
+    session.flush()
+    session.add(ProductStock(company_id=linked.company_id, product_id=product.id, warehouse_id=linked.warehouse_id,
+        quantity=payload.opening_stock, reorder_level=payload.reorder_level))
+    if payload.opening_stock:
+        session.add(StockMovement(company_id=linked.company_id, branch_id=linked.branch_id, warehouse_id=linked.warehouse_id,
+            product_id=product.id, quantity_delta=payload.opening_stock, reason="opening_stock",
+            reference="PRODUCT-OPENING", created_by=membership["email"][:80]))
+    session.add(AuditLog(company_id=linked.company_id, username=membership["email"][:80], action="product_created",
+        entity_type="Product", entity_id=str(product.id), details=json.dumps({"sku": sku, "opening_stock": str(payload.opening_stock)})))
+    session.commit()
+    return {"id": product.id, "sku": product.sku, "name": product.name, "hsn_sac": product.hsn_sac, "unit": product.unit,
+        "selling_price": str(product.selling_price), "purchase_price": str(product.purchase_price), "gst_rate": str(product.gst_rate),
+        "stock_qty": str(product.stock_qty), "reorder_level": str(product.reorder_level), "active": product.active}
+
+
 @app.get("/erp/customers", tags=["erp"])
 def list_erp_customers(
     membership: dict = Depends(current_membership),
@@ -1860,7 +1947,7 @@ def list_erp_products(
         "hsn_sac": row.hsn_sac, "unit": row.unit,
         "selling_price": str(row.selling_price),
         "purchase_price": str(row.purchase_price),
-        "gst_rate": str(row.gst_rate), "active": row.active,
+        "gst_rate": str(row.gst_rate), "stock_qty": str(row.stock_qty), "reorder_level": str(row.reorder_level), "active": row.active,
     } for row in rows]}
 
 
