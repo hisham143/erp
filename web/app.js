@@ -32,8 +32,10 @@
   }
   function show(view) {
     ["auth-view","onboarding-view","complete-view","dashboard-view","module-view"].forEach(id => { const el=$(id); if(el) el.hidden = id !== view; });
-    const nav=$("module-nav"); if(nav) nav.style.display = ["dashboard-view","module-view"].includes(view) ? "" : "none";
-    $("page-label").textContent = view === "auth-view" ? "Get started" : view === "onboarding-view" ? "Business setup" : "Setup saved";
+    const nav=$("module-nav");
+    // Keep navigation available after sign-in, including while editing Business Setup.
+    if(nav) nav.style.display = view === "auth-view" ? "none" : "";
+    $("page-label").textContent = view === "auth-view" ? "Get started" : view === "onboarding-view" ? "Business setup" : view === "dashboard-view" ? "Dashboard" : view === "module-view" ? $("module-title").textContent : "Workspace";
   }
   function setBusy(form, busy, label) {
     const button = form.querySelector('button[type="submit"]');
@@ -194,10 +196,10 @@
     const today=new Date().toISOString().slice(0,10),start=today.slice(0,4)+"-01-01";
     try{const cash=await api("/erp/accounting/cash-flow?from_date="+start+"&to_date="+today);$("cash-summary").innerHTML='<div class="snapshot-item"><small>Net cash & bank movement</small><strong>'+money(cash.net_cash_bank_movement)+'</strong></div>'+(cash.accounts||[]).map(a=>'<div class="snapshot-item"><small>'+esc(a.name)+'</small><strong>'+money(a.net_movement)+'</strong></div>').join("");}catch(e){$("cash-summary").innerHTML='<div class="empty-state">No cash/bank summary available.</div>';}
   }
-  function makeTable(headers,rows){return rows.length?'<div class="table-wrap"><table class="module-table"><thead><tr>'+headers.map(x=>'<th>'+esc(x)+'</th>').join("")+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join("")+'</tr>').join("")+'</tbody></table></div>':'<div class="empty-state">No records found in this workspace yet.</div>';}
+  function makeTable(headers,rows){return rows.length?'<div class="table-wrap"><table class="module-table"><thead><tr>'+headers.map(x=>'<th>'+esc(x)+'</th>').join("")+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join("")+'</tr>').join("")+'</tbody></table></div>':'<div class="module-empty"><div class="module-empty-icon">＋</div><h3>No records yet</h3><p>This workspace is new, so there are no records in this section. Once you add your first record, it will appear here.</p><small>Next: create forms and connect them to the ERP APIs.</small></div>';}
   async function openModule(key){
     if(key==="dashboard"){show("dashboard-view");await loadDashboard();return;}
-    if(key==="business"){show("onboarding-view");try{fillProfile(await api("/onboarding/business"));}catch(e){notice(e.message);}return;}
+    if(key==="business"){show("onboarding-view");$("page-label").textContent="Business setup";try{const profile=await api("/onboarding/business");state.profile=profile;fillProfile(profile);}catch(e){notice("Could not load business setup: "+e.message);}return;}
     if(!meta[key])return;
     show("module-view");$("module-eyebrow").textContent=meta[key][0];$("module-title").textContent=meta[key][1];$("module-description").textContent=meta[key][2];$("module-content").innerHTML='<div class="loading-state">Loading…</div>';
     try{
