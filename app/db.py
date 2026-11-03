@@ -413,6 +413,7 @@ class JournalEntry(Base):
     """Immutable posted accounting voucher header."""
     __tablename__ = "journal_entries"
     __table_args__ = (
+        UniqueConstraint("company_id", "entry_number", name="uq_journal_company_number"),
         UniqueConstraint(
             "company_id", "source_type", "source_id",
             name="uq_journal_company_source",
