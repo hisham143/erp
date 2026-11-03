@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import uuid
@@ -21,7 +22,8 @@ from sqlalchemy.orm import Session
 from app.db import (
     SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
-    SaaSTenantMembership, Warehouse, Customer, Product, Supplier, Invoice, InvoiceItem, Payment,
+    SaaSTenantMembership, Warehouse, Customer, Product, ProductStock, StockMovement,
+    AuditLog, Supplier, Invoice, InvoiceItem, Payment,
     hash_password, verify_password,
 )
 from app.saas.security import (
@@ -759,6 +761,41 @@ def create_sales_invoice(
             sgst_total += sgst
             igst_total += igst
             grand_total += line_total
+        # Deduct stock once per product, aggregating duplicate invoice lines.
+        quantities: dict[int, Decimal] = {}
+        for line in invoice.items:
+            if line.product_id is not None:
+                quantities[line.product_id] = quantities.get(line.product_id, Decimal("0")) + Decimal(line.quantity)
+        stock_rows: dict[int, ProductStock] = {}
+        for product_id, requested_qty in quantities.items():
+            product = session.scalar(select(Product).where(
+                Product.id == product_id, Product.company_id == linked.company_id
+            ).with_for_update())
+            stock = session.scalar(select(ProductStock).where(
+                ProductStock.company_id == linked.company_id,
+                ProductStock.product_id == product_id,
+                ProductStock.warehouse_id == linked.warehouse_id,
+            ).with_for_update())
+            if stock is None:
+                # One-time bridge from the desktop aggregate stock field.
+                stock = ProductStock(
+                    company_id=linked.company_id, product_id=product_id,
+                    warehouse_id=linked.warehouse_id,
+                    quantity=Decimal(product.stock_qty or 0),
+                    reorder_level=Decimal(product.reorder_level or 0),
+                )
+                session.add(stock)
+                session.flush()
+            available = Decimal(stock.quantity or 0)
+            if available < requested_qty:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Insufficient stock for product {product_id}. Available: {available}, requested: {requested_qty}.",
+                )
+            stock.quantity = available - requested_qty
+            product.stock_qty = stock.quantity
+            stock_rows[product_id] = stock
+
         invoice.taxable_total = _money(taxable_total)
         invoice.cgst_total = _money(cgst_total)
         invoice.sgst_total = _money(sgst_total)
@@ -767,6 +804,19 @@ def create_sales_invoice(
         session.add(invoice)
         session.flush()
         invoice.invoice_number = f"INV-{linked.company_id}-{invoice.invoice_date:%Y%m%d}-{invoice.id:06d}"
+        for product_id, quantity in quantities.items():
+            session.add(StockMovement(
+                company_id=linked.company_id, branch_id=linked.branch_id,
+                warehouse_id=linked.warehouse_id, product_id=product_id,
+                quantity_delta=-quantity, reason="sales_invoice",
+                reference=invoice.invoice_number, created_by=membership["email"][:80],
+            ))
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="sales_invoice_created", entity_type="Invoice",
+            entity_id=str(invoice.id),
+            details=json.dumps({"invoice_number": invoice.invoice_number, "stock_deducted": {str(k): str(v) for k, v in quantities.items()}}),
+        ))
         session.commit()
         session.refresh(invoice)
         return _invoice_payload(invoice)
@@ -832,6 +882,68 @@ def record_sales_payment(
     except (IntegrityError, SQLAlchemyError) as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Payment could not be recorded.") from exc
+
+
+@app.post("/erp/sales/invoices/{invoice_id}/cancel", tags=["sales"])
+def cancel_sales_invoice(
+    invoice_id: int,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    invoice = session.scalar(select(Invoice).where(
+        Invoice.id == invoice_id, Invoice.company_id == linked.company_id
+    ).with_for_update())
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Sales invoice not found.")
+    if invoice.status in {"cancelled", "void", "draft"}:
+        raise HTTPException(status_code=409, detail="This invoice cannot be cancelled.")
+    if Decimal(invoice.amount_paid or 0) != 0:
+        raise HTTPException(
+            status_code=409,
+            detail="This invoice has recorded payments. Refund/reversal must be completed before cancellation.",
+        )
+    quantities: dict[int, Decimal] = {}
+    for line in invoice.items:
+        if line.product_id is not None:
+            quantities[line.product_id] = quantities.get(line.product_id, Decimal("0")) + Decimal(line.quantity)
+    try:
+        for product_id, quantity in quantities.items():
+            stock = session.scalar(select(ProductStock).where(
+                ProductStock.company_id == linked.company_id,
+                ProductStock.product_id == product_id,
+                ProductStock.warehouse_id == invoice.warehouse_id,
+            ).with_for_update())
+            product = session.scalar(select(Product).where(
+                Product.id == product_id, Product.company_id == linked.company_id
+            ).with_for_update())
+            if stock is None or product is None:
+                raise HTTPException(status_code=409, detail=f"Stock record for product {product_id} is missing; cancellation was not applied.")
+            stock.quantity = Decimal(stock.quantity or 0) + quantity
+            product.stock_qty = stock.quantity
+            session.add(StockMovement(
+                company_id=linked.company_id, branch_id=invoice.branch_id,
+                warehouse_id=invoice.warehouse_id, product_id=product_id,
+                quantity_delta=quantity, reason="sales_invoice_cancel",
+                reference=invoice.invoice_number, created_by=membership["email"][:80],
+            ))
+        invoice.status = "cancelled"
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="sales_invoice_cancelled", entity_type="Invoice",
+            entity_id=str(invoice.id),
+            details=json.dumps({"invoice_number": invoice.invoice_number, "stock_restored": {str(k): str(v) for k, v in quantities.items()}}),
+        ))
+        session.commit()
+        session.refresh(invoice)
+        return _invoice_payload(invoice)
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Sales invoice cancellation could not be saved.") from exc
 
 
 @app.get("/erp/sales/invoices", tags=["sales"])
