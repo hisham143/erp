@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import uuid
 from pathlib import Path
 from typing import Generator
 
@@ -19,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.db import (
     SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
-    SaaSTenantMembership, Warehouse, Customer, Product, Supplier,
+    SaaSTenantMembership, Warehouse, Customer, Product, Supplier, Invoice, InvoiceItem,
     hash_password, verify_password,
 )
 from app.saas.security import (
@@ -51,6 +53,20 @@ class LoginRequest(BaseModel):
 class RefreshRequest(BaseModel):
     refresh_token: str | None = Field(default=None, min_length=40, max_length=200)
 
+
+
+class SalesInvoiceItemRequest(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+
+
+class SalesInvoiceRequest(BaseModel):
+    customer_id: int = Field(gt=0)
+    invoice_date: date | None = None
+    place_of_supply_state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    items: list[SalesInvoiceItemRequest] = Field(min_length=1, max_length=200)
 
 
 class MembershipRoleRequest(BaseModel):
@@ -607,6 +623,173 @@ def get_current_erp_context(
 ):
     linked = _tenant_erp_context(session, membership["tenant_id"])
     return _erp_setup_payload(session, linked)
+
+
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _invoice_payload(invoice: Invoice) -> dict:
+    return {
+        "id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_date": invoice.invoice_date.date().isoformat(),
+        "customer_id": invoice.customer_id,
+        "seller_state_code": invoice.seller_state_code,
+        "place_of_supply_state_code": invoice.place_of_supply_state_code,
+        "is_interstate": invoice.is_interstate,
+        "taxable_total": str(invoice.taxable_total),
+        "cgst_total": str(invoice.cgst_total),
+        "sgst_total": str(invoice.sgst_total),
+        "igst_total": str(invoice.igst_total),
+        "grand_total": str(invoice.grand_total),
+        "amount_paid": str(invoice.amount_paid),
+        "status": invoice.status,
+        "items": [{
+            "id": item.id, "product_id": item.product_id,
+            "sku": item.sku_snapshot, "description": item.description_snapshot,
+            "hsn_sac": item.hsn_sac_snapshot, "unit": item.unit_snapshot,
+            "quantity": str(item.quantity), "unit_price": str(item.unit_price),
+            "discount_amount": str(item.discount_amount),
+            "gst_rate": str(item.gst_rate_snapshot),
+            "taxable_value": str(item.taxable_value),
+            "cgst_amount": str(item.cgst_amount),
+            "sgst_amount": str(item.sgst_amount),
+            "igst_amount": str(item.igst_amount),
+            "line_total": str(item.line_total),
+        } for item in invoice.items],
+    }
+
+
+@app.post("/erp/sales/invoices", status_code=status.HTTP_201_CREATED, tags=["sales"])
+def create_sales_invoice(
+    payload: SalesInvoiceRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant", "sales")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    customer = session.scalar(select(Customer).where(
+        Customer.id == payload.customer_id,
+        Customer.company_id == linked.company_id,
+        Customer.active.is_(True),
+    ))
+    if not customer:
+        raise HTTPException(status_code=404, detail="Active customer not found in this workspace.")
+    company = session.get(Company, linked.company_id)
+    seller_state = (company.state_code or "").strip()
+    supply_state = (payload.place_of_supply_state_code or customer.state_code or "").strip()
+    if not re.fullmatch(r"[0-9]{2}", seller_state) or not re.fullmatch(r"[0-9]{2}", supply_state):
+        raise HTTPException(status_code=409, detail="Seller and place-of-supply state codes must be configured.")
+    interstate = seller_state != supply_state
+    invoice_date = datetime.combine(payload.invoice_date or date.today(), time.min)
+    invoice = Invoice(
+        company_id=linked.company_id,
+        branch_id=linked.branch_id,
+        warehouse_id=linked.warehouse_id,
+        invoice_number=f"PENDING-{uuid.uuid4().hex}",
+        invoice_date=invoice_date,
+        customer_id=customer.id,
+        seller_state_code=seller_state,
+        place_of_supply_state_code=supply_state,
+        is_interstate=interstate,
+        status="issued",
+        created_by=membership["email"][:80],
+    )
+    taxable_total = cgst_total = sgst_total = igst_total = grand_total = Decimal("0")
+    try:
+        for requested in payload.items:
+            product = session.scalar(select(Product).where(
+                Product.id == requested.product_id,
+                Product.company_id == linked.company_id,
+                Product.active.is_(True),
+            ))
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Active product {requested.product_id} not found in this workspace.")
+            quantity = Decimal(requested.quantity)
+            unit_price = Decimal(requested.unit_price if requested.unit_price is not None else product.selling_price)
+            discount = Decimal(requested.discount_amount)
+            gross = _money(quantity * unit_price)
+            if discount > gross:
+                raise HTTPException(status_code=422, detail="Discount cannot exceed the line gross amount.")
+            taxable = _money(gross - discount)
+            rate = Decimal(product.gst_rate)
+            if rate < 0 or rate > 100:
+                raise HTTPException(status_code=409, detail=f"Product {product.id} has an invalid GST rate.")
+            tax = _money(taxable * rate / Decimal("100"))
+            cgst = sgst = Decimal("0.00")
+            igst = Decimal("0.00")
+            if interstate:
+                igst = tax
+            else:
+                cgst = _money(tax / Decimal("2"))
+                sgst = tax - cgst
+            line_total = taxable + tax
+            invoice.items.append(InvoiceItem(
+                product_id=product.id,
+                sku_snapshot=product.sku,
+                description_snapshot=product.name,
+                hsn_sac_snapshot=product.hsn_sac,
+                unit_snapshot=product.unit,
+                quantity=quantity,
+                unit_price=unit_price,
+                discount_amount=discount,
+                gst_rate_snapshot=rate,
+                taxable_value=taxable,
+                cgst_amount=cgst,
+                sgst_amount=sgst,
+                igst_amount=igst,
+                line_total=line_total,
+            ))
+            taxable_total += taxable
+            cgst_total += cgst
+            sgst_total += sgst
+            igst_total += igst
+            grand_total += line_total
+        invoice.taxable_total = _money(taxable_total)
+        invoice.cgst_total = _money(cgst_total)
+        invoice.sgst_total = _money(sgst_total)
+        invoice.igst_total = _money(igst_total)
+        invoice.grand_total = _money(grand_total)
+        session.add(invoice)
+        session.flush()
+        invoice.invoice_number = f"INV-{linked.company_id}-{invoice.invoice_date:%Y%m%d}-{invoice.id:06d}"
+        session.commit()
+        session.refresh(invoice)
+        return _invoice_payload(invoice)
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Sales invoice could not be saved.") from exc
+
+
+@app.get("/erp/sales/invoices", tags=["sales"])
+def list_sales_invoices(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = session.scalars(select(Invoice).where(
+        Invoice.company_id == linked.company_id
+    ).order_by(Invoice.invoice_date.desc(), Invoice.id.desc())).all()
+    return {"items": [_invoice_payload(row) for row in rows]}
+
+
+@app.get("/erp/sales/invoices/{invoice_id}", tags=["sales"])
+def get_sales_invoice(
+    invoice_id: int,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    invoice = session.scalar(select(Invoice).where(
+        Invoice.id == invoice_id, Invoice.company_id == linked.company_id
+    ))
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Sales invoice not found.")
+    return _invoice_payload(invoice)
 
 
 @app.get("/erp/customers", tags=["erp"])
