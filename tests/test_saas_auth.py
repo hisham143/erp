@@ -806,3 +806,196 @@ def test_invoice_cancellation_is_tenant_scoped_and_role_protected(client_and_ses
         "Authorization": f"Bearer {token}"
     })
     assert denied.status_code == 403
+
+
+def _purchase_test_fixture(client, sessions, email="purchase-owner@example.com", tenant_name="Purchase Workspace"):
+    from decimal import Decimal
+    from app.db import Product, Supplier
+    owner = _register(client, email, tenant_name)
+    setup = _save_unregistered_profile(client, owner["access_token"], f"{tenant_name} Company")
+    with sessions() as session:
+        supplier = Supplier(
+            company_id=setup["company"]["id"], name="Test Supplier",
+            state_code="32", active=True,
+        )
+        product = Product(
+            company_id=setup["company"]["id"], sku=f"PUR-{email[:8]}",
+            name="Purchase Product", hsn_sac="1001",
+            purchase_price=Decimal("100.00"), selling_price=Decimal("150.00"),
+            gst_rate=Decimal("18.00"), stock_qty=Decimal("10.000"), active=True,
+        )
+        session.add_all([supplier, product])
+        session.commit()
+        supplier_id, product_id = supplier.id, product.id
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    return owner, setup, headers, supplier_id, product_id
+
+
+def test_purchase_bill_calculates_gst_receives_stock_and_audits(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Product, ProductStock, StockMovement, AuditLog, Purchase
+    client, sessions = client_and_sessions
+    owner, setup, headers, supplier_id, product_id = _purchase_test_fixture(client, sessions)
+    response = client.post("/erp/purchases/bills", headers=headers, json={
+        "supplier_id": supplier_id, "supplier_invoice_number": "SUP-INV-001",
+        "purchase_date": "2026-11-03",
+        "items": [{"product_id": product_id, "quantity": "2", "unit_cost": "100"}],
+    })
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["purchase_number"].startswith("PUR-")
+    assert body["taxable_total"] == "200.00"
+    assert body["cgst_total"] == "18.00"
+    assert body["sgst_total"] == "18.00"
+    assert body["igst_total"] == "0.00"
+    assert body["grand_total"] == "236.00"
+    assert body["balance_due"] == "236.00"
+    assert body["status"] == "received"
+    with sessions() as session:
+        product = session.get(Product, product_id)
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product_id))
+        movement = session.scalar(select(StockMovement).where(
+            StockMovement.reference == body["purchase_number"],
+            StockMovement.reason == "purchase_received",
+        ))
+        audit = session.scalar(select(AuditLog).where(
+            AuditLog.action == "purchase_bill_created",
+            AuditLog.entity_id == str(body["id"]),
+        ))
+        saved = session.get(Purchase, body["id"])
+        assert product.stock_qty == Decimal("12.000")
+        assert stock.quantity == Decimal("12.000")
+        assert movement.quantity_delta == Decimal("2.000")
+        assert audit is not None
+        assert saved.status == "received"
+
+
+def test_purchase_supplier_payment_balance_and_duplicate_guard(client_and_sessions):
+    from decimal import Decimal
+    from app.db import SupplierPayment, Purchase
+    client, sessions = client_and_sessions
+    _, _, headers, supplier_id, product_id = _purchase_test_fixture(
+        client, sessions, "purchase-pay@example.com", "Purchase Payment Workspace"
+    )
+    created = client.post("/erp/purchases/bills", headers=headers, json={
+        "supplier_id": supplier_id,
+        "items": [{"product_id": product_id, "quantity": "1", "unit_cost": "100"}],
+    })
+    assert created.status_code == 201, created.text
+    purchase_id = created.json()["id"]
+    paid = client.post(f"/erp/purchases/bills/{purchase_id}/payments", headers=headers, json={
+        "amount": "50.00", "reference": "SUP-PAY-001",
+    })
+    assert paid.status_code == 201, paid.text
+    assert paid.json()["amount_paid"] == "50.00"
+    assert paid.json()["balance_due"] == "68.00"
+    over = client.post(f"/erp/purchases/bills/{purchase_id}/payments", headers=headers, json={
+        "amount": "68.01", "reference": "SUP-PAY-OVER",
+    })
+    assert over.status_code == 422
+    duplicate = client.post(f"/erp/purchases/bills/{purchase_id}/payments", headers=headers, json={
+        "amount": "1.00", "reference": "SUP-PAY-001",
+    })
+    assert duplicate.status_code == 409
+    with sessions() as session:
+        saved = session.get(Purchase, purchase_id)
+        assert saved.amount_paid == Decimal("50.00")
+        assert session.scalar(select(SupplierPayment).where(
+            SupplierPayment.purchase_id == purchase_id
+        )) is not None
+
+
+def test_purchase_cancellation_reverses_stock_once_and_blocks_if_insufficient(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Product, ProductStock, StockMovement, Purchase
+    client, sessions = client_and_sessions
+    _, _, headers, supplier_id, product_id = _purchase_test_fixture(
+        client, sessions, "purchase-cancel@example.com", "Purchase Cancel Workspace"
+    )
+    created = client.post("/erp/purchases/bills", headers=headers, json={
+        "supplier_id": supplier_id,
+        "items": [{"product_id": product_id, "quantity": "2", "unit_cost": "100"}],
+    })
+    assert created.status_code == 201, created.text
+    purchase_id = created.json()["id"]
+    cancelled = client.post(f"/erp/purchases/bills/{purchase_id}/cancel", headers=headers)
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    repeated = client.post(f"/erp/purchases/bills/{purchase_id}/cancel", headers=headers)
+    assert repeated.status_code == 409
+    with sessions() as session:
+        product = session.get(Product, product_id)
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product_id))
+        movements = session.scalars(select(StockMovement).where(
+            StockMovement.reference == created.json()["purchase_number"]
+        )).all()
+        saved = session.get(Purchase, purchase_id)
+        assert product.stock_qty == Decimal("10.000")
+        assert stock.quantity == Decimal("10.000")
+        assert len(movements) == 2
+        assert sum((Decimal(row.quantity_delta) for row in movements), Decimal("0")) == 0
+        assert saved.status == "cancelled"
+
+
+def test_purchase_payment_blocks_cancellation_and_purchase_is_tenant_scoped(client_and_sessions):
+    client, sessions = client_and_sessions
+    owner, _, headers, supplier_id, product_id = _purchase_test_fixture(
+        client, sessions, "purchase-scope@example.com", "Purchase Scope Workspace"
+    )
+    other, _, other_headers, _, _ = _purchase_test_fixture(
+        client, sessions, "purchase-other@example.com", "Purchase Other Workspace"
+    )
+    created = client.post("/erp/purchases/bills", headers=headers, json={
+        "supplier_id": supplier_id,
+        "items": [{"product_id": product_id, "quantity": "1", "unit_cost": "100"}],
+    })
+    assert created.status_code == 201, created.text
+    purchase_id = created.json()["id"]
+    assert client.get(f"/erp/purchases/bills/{purchase_id}", headers=other_headers).status_code == 404
+    assert client.post(f"/erp/purchases/bills/{purchase_id}/payments", headers=other_headers, json={
+        "amount": "1.00",
+    }).status_code == 404
+    paid = client.post(f"/erp/purchases/bills/{purchase_id}/payments", headers=headers, json={
+        "amount": "1.00", "reference": "PAY-BEFORE-CANCEL",
+    })
+    assert paid.status_code == 201
+    blocked = client.post(f"/erp/purchases/bills/{purchase_id}/cancel", headers=headers)
+    assert blocked.status_code == 409
+    assert client.get("/erp/purchases/bills", headers=other_headers).json()["items"] == []
+
+
+def test_purchase_creation_rejects_foreign_supplier_and_sales_role(client_and_sessions):
+    from app.db import SaaSIdentity, SaaSTenantMembership
+    from app.saas.security import create_access_token
+    client, sessions = client_and_sessions
+    owner, _, headers, supplier_id, product_id = _purchase_test_fixture(
+        client, sessions, "purchase-role@example.com", "Purchase Role Workspace"
+    )
+    other, _, other_headers, _, _ = _purchase_test_fixture(
+        client, sessions, "purchase-foreign@example.com", "Purchase Foreign Workspace"
+    )
+    foreign = client.post("/erp/purchases/bills", headers=headers, json={
+        "supplier_id": 999999,
+        "items": [{"product_id": product_id, "quantity": "1", "unit_cost": "100"}],
+    })
+    assert foreign.status_code == 404
+    with sessions() as session:
+        sales = SaaSIdentity(
+            email="purchase-sales-role@example.com", full_name="Sales Role",
+            password_hash="unused-test-hash", active=True,
+        )
+        session.add(sales)
+        session.flush()
+        session.add(SaaSTenantMembership(
+            tenant_id=owner["tenant"]["id"], identity_id=sales.id,
+            role="sales", active=True,
+        ))
+        token = create_access_token(sales.id, owner["tenant"]["id"])
+        session.commit()
+    denied = client.post("/erp/purchases/bills", headers={
+        "Authorization": f"Bearer {token}"
+    }, json={"supplier_id": supplier_id, "items": [
+        {"product_id": product_id, "quantity": "1", "unit_cost": "100"}
+    ]})
+    assert denied.status_code == 403
+
