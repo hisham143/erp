@@ -6,7 +6,7 @@ import hashlib
 import os
 from sqlalchemy import (
     create_engine, String, Integer, Boolean, DateTime, ForeignKey, Numeric,
-    Text, UniqueConstraint, select, func
+    Text, UniqueConstraint, Index, select, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -395,6 +395,7 @@ class LedgerAccount(Base):
     __tablename__ = "ledger_accounts"
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_ledger_account_company_code"),
+        Index("ix_ledger_accounts_company_type", "company_id", "account_type"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
@@ -418,6 +419,7 @@ class JournalEntry(Base):
             "company_id", "source_type", "source_id",
             name="uq_journal_company_source",
         ),
+        Index("ix_journal_entries_company_date", "company_id", "entry_date"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
@@ -437,6 +439,7 @@ class JournalEntry(Base):
 
 class JournalLine(Base):
     __tablename__ = "journal_lines"
+    __table_args__ = (Index("ix_journal_lines_account", "account_id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     journal_entry_id: Mapped[int] = mapped_column(
         ForeignKey("journal_entries.id"), nullable=False
