@@ -819,7 +819,7 @@ def _purchase_test_fixture(client, sessions, email="purchase-owner@example.com",
             state_code="32", active=True,
         )
         product = Product(
-            company_id=setup["company"]["id"], sku=f"PUR-{email[:8]}",
+            company_id=setup["company"]["id"], sku=f"PUR-{email.split('@')[0].replace('-', '').upper()[:24]}",
             name="Purchase Product", hsn_sac="1001",
             purchase_price=Decimal("100.00"), selling_price=Decimal("150.00"),
             gst_rate=Decimal("18.00"), stock_qty=Decimal("10.000"), active=True,
