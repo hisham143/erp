@@ -7,6 +7,9 @@
 - Manual double-entry journal posting with debit/credit equality validation.
 - Tenant-scoped Trial Balance and account General Ledger reports.
 - Audit event for manual journal posting.
+- Automatic, source-linked journals for sales invoices, customer receipts, purchase bills, and supplier payments.
+- Reversal journals on eligible sales invoice and purchase bill cancellation.
+- Source-level idempotency: one journal per company/source type/source ID.
 - Automated API tests for chart isolation, balanced posting, reports, invalid totals, and cross-tenant account rejection.
 
 ## API
@@ -54,6 +57,6 @@ Account IDs are company-specific; clients must read the chart endpoint rather th
 
 ## Important accounting boundaries
 
-This phase does **not** yet automatically post Sales invoices, customer receipts, Purchase bills, supplier payments, GST liabilities/ITC, stock valuation, or cost of goods sold. It does not provide period locking, reversal vouchers, bank reconciliation, financial statements, or a GST-compliant tax determination engine. Manual journal endpoints must not be mistaken for a complete production accounting package.
+Automatic postings now cover invoice receivables/revenue/output GST, purchase inventory/input GST/payables, and payment settlement against cash/bank. Eligible invoice and purchase cancellations create reversing journals. Sales COGS and inventory valuation are deliberately not posted because the current product model does not yet provide a reliable cost-layer valuation. This phase does not provide period locking, bank reconciliation, financial statements, or a GST-compliant tax determination engine. Manual journal endpoints must not be mistaken for a complete production accounting package.
 
-Before production use, add PostgreSQL concurrency tests, accounting period controls, immutable reversal workflows, source-to-journal posting idempotency, and a qualified Indian accounting/GST review. Do not connect existing transaction endpoints to automatic journals until each posting map and rollback path has dedicated automated tests.
+Before production use, add PostgreSQL concurrency tests, accounting period controls, payment reversal/refund workflows, immutable ledger enforcement at the database/service boundary, inventory cost-layer valuation and COGS, and a qualified Indian accounting/GST review. Validate every posting map and rollback path with endpoint-level automated tests.
