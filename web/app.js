@@ -197,16 +197,62 @@
     try{const cash=await api("/erp/accounting/cash-flow?from_date="+start+"&to_date="+today);$("cash-summary").innerHTML='<div class="snapshot-item"><small>Net cash & bank movement</small><strong>'+money(cash.net_cash_bank_movement)+'</strong></div>'+(cash.accounts||[]).map(a=>'<div class="snapshot-item"><small>'+esc(a.name)+'</small><strong>'+money(a.net_movement)+'</strong></div>').join("");}catch(e){$("cash-summary").innerHTML='<div class="empty-state">No cash/bank summary available.</div>';}
   }
   function makeTable(headers,rows){return rows.length?'<div class="table-wrap"><table class="module-table"><thead><tr>'+headers.map(x=>'<th>'+esc(x)+'</th>').join("")+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join("")+'</tr>').join("")+'</tbody></table></div>':'<div class="module-empty"><div class="module-empty-icon">＋</div><h3>No records yet</h3><p>This workspace is new, so there are no records in this section. Once you add your first record, it will appear here.</p><small>Next: create forms and connect them to the ERP APIs.</small></div>';}
+
+  let activeModule="dashboard", moduleCache={};
+  function formField(label,name,type="text",required=true,extra=""){return '<label class="erp-field"><span>'+label+'</span><input name="'+name+'" type="'+type+'" '+(required?"required":"")+' '+extra+'></label>';}
+  function selectField(label,name,options){return '<label class="erp-field"><span>'+label+'</span><select name="'+name+'" required>'+options.map(o=>'<option value="'+esc(o[0])+'">'+esc(o[1])+'</option>').join("")+'</select></label>';}
+  function showCreateForm(key){
+    const data=moduleCache;
+    const customerOptions=(data.customers||[]).map(x=>[x.id,x.name]);
+    const supplierOptions=(data.suppliers||[]).map(x=>[x.id,x.name]);
+    const productOptions=(data.products||[]).map(x=>[x.id,x.sku+" · "+x.name]);
+    let title="",fields="";
+    if(key==="customers"){title="Add customer";fields=formField("Customer name","name")+formField("GSTIN","gstin", "text",false)+selectField("State", "state_code",stateOptions)+formField("Phone","phone","tel",false)+formField("Email","email","email",false)+formField("Address","address","text",false);}
+    if(key==="suppliers"){title="Add supplier";fields=formField("Supplier name","name")+formField("GSTIN","gstin","text",false)+selectField("State","state_code",stateOptions)+formField("Phone","phone","tel",false)+formField("Address","address","text",false);}
+    if(key==="inventory"){title="Add product";fields=formField("SKU","sku")+formField("Product name","name")+formField("HSN / SAC","hsn_sac","text",false)+formField("Unit","unit","text",true,'value="Nos"')+formField("Selling price (₹)","selling_price","number",true,'min="0" step="0.01"')+formField("Purchase price (₹)","purchase_price","number",true,'min="0" step="0.01" value="0"')+formField("GST rate (%)","gst_rate","number",true,'min="0" max="100" step="0.01" value="18"')+formField("Opening stock","opening_stock","number",true,'min="0" step="0.001" value="0"')+formField("Reorder level","reorder_level","number",true,'min="0" step="0.001" value="0"');}
+    if(key==="sales"){title="Create sales invoice";if(!customerOptions.length||!productOptions.length){notice("Add at least one customer and one product before creating an invoice.");return;}fields=selectField("Customer","customer_id",customerOptions)+formField("Invoice date","invoice_date","date",true,'value="'+new Date().toISOString().slice(0,10)+'"')+selectField("Product","product_id",productOptions)+formField("Quantity","quantity","number",true,'min="0.001" step="0.001" value="1"')+formField("Unit price (₹)","unit_price","number",false,'min="0" step="0.01"')+formField("Discount (₹)","discount_amount","number",false,'min="0" step="0.01" value="0"');}
+    if(key==="purchases"){title="Create purchase bill";if(!supplierOptions.length||!productOptions.length){notice("Add at least one supplier and one product before creating a purchase bill.");return;}fields=selectField("Supplier","supplier_id",supplierOptions)+formField("Supplier invoice number","supplier_invoice_number","text",false)+formField("Purchase date","purchase_date","date",true,'value="'+new Date().toISOString().slice(0,10)+'"')+selectField("Product","product_id",productOptions)+formField("Quantity","quantity","number",true,'min="0.001" step="0.001" value="1"')+formField("Unit cost (₹)","unit_cost","number",true,'min="0" step="0.01"')+formField("Discount (₹)","discount_amount","number",false,'min="0" step="0.01" value="0"');}
+    if(!fields)return;
+    $("module-content").innerHTML='<div class="form-panel"><div class="form-panel-head"><div><span class="eyebrow">NEW RECORD</span><h2>'+title+'</h2><p>Saved directly to this workspace and its company records.</p></div><button type="button" class="secondary-button" id="cancel-create">Cancel</button></div><form id="module-create-form" class="erp-form-grid">'+fields+'<div class="form-submit"><button class="primary-button" type="submit">Save '+(key==="sales"?"invoice":key==="purchases"?"bill":"record")+'</button></div></form></div>';
+    $("cancel-create").addEventListener("click",()=>openModule(key));
+    $("module-create-form").addEventListener("submit",async e=>{
+      e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form).entries());
+      const btn=form.querySelector('[type=submit]');btn.disabled=true;btn.textContent="Saving…";
+      try{
+        let path="/erp/"+key,body=v;
+        if(key==="sales"){path="/erp/sales/invoices";body={customer_id:Number(v.customer_id),invoice_date:v.invoice_date,items:[{product_id:Number(v.product_id),quantity:v.quantity,unit_price:v.unit_price? v.unit_price:null,discount_amount:v.discount_amount||"0"}]};}
+        if(key==="purchases"){path="/erp/purchases/bills";body={supplier_id:Number(v.supplier_id),supplier_invoice_number:v.supplier_invoice_number||"",purchase_date:v.purchase_date,items:[{product_id:Number(v.product_id),quantity:v.quantity,unit_cost:v.unit_cost,discount_amount:v.discount_amount||"0"}]};}
+        const result=await api(path,{method:"POST",body:JSON.stringify(body)});
+        notice((result.invoice_number||result.purchase_number||result.name||result.sku||"Record")+" saved successfully.","success");
+        await openModule(key);
+      }catch(err){notice(err.message);btn.disabled=false;btn.textContent="Try again";}
+    });
+  }
   async function openModule(key){
+    activeModule=key;
     if(key==="dashboard"){show("dashboard-view");await loadDashboard();return;}
     if(key==="business"){show("onboarding-view");$("page-label").textContent="Business setup";try{const profile=await api("/onboarding/business");state.profile=profile;fillProfile(profile);}catch(e){notice("Could not load business setup: "+e.message);}return;}
     if(!meta[key])return;
-    show("module-view");$("module-eyebrow").textContent=meta[key][0];$("module-title").textContent=meta[key][1];$("module-description").textContent=meta[key][2];$("module-content").innerHTML='<div class="loading-state">Loading…</div>';
+    show("module-view");$("module-eyebrow").textContent=meta[key][0];$("module-title").textContent=meta[key][1];$("module-description").textContent=meta[key][2];
+    const create=$("module-create-action");const createLabels={customers:"＋ Add customer",suppliers:"＋ Add supplier",inventory:"＋ Add product",sales:"＋ New invoice",purchases:"＋ New purchase bill"};
+    create.hidden=!createLabels[key];create.textContent=createLabels[key]||"＋ Create new";create.onclick=()=>showCreateForm(key);
+    $("module-content").innerHTML='<div class="loading-state">Loading workspace data…</div>';
     try{
-      if(key==="accounting"){const [a,t]=await Promise.all([api("/erp/accounting/accounts"),api("/erp/accounting/trial-balance")]);$("module-content").innerHTML='<div class="report-summary"><div><small>Debits</small><strong>'+money(t.total_debit)+'</strong></div><div><small>Credits</small><strong>'+money(t.total_credit)+'</strong></div><div><small>Trial balance</small><strong>'+(t.balanced?"Balanced":"Review")+'</strong></div></div>'+makeTable(["Code","Account","Type"],a.items.map(x=>[x.code,x.name,x.account_type]));return;}
-      if(key==="reports"){const today=new Date().toISOString().slice(0,10),start=today.slice(0,4)+"-01-01";const [p,b,c]=await Promise.all([api("/erp/accounting/profit-loss?from_date="+start+"&to_date="+today),api("/erp/accounting/balance-sheet?as_of="+today),api("/erp/accounting/cash-flow?from_date="+start+"&to_date="+today)]);$("module-content").innerHTML='<div class="report-summary">'+[["Income",p.total_income],["Expenses",p.total_expenses],["Net profit",p.net_profit],["Assets",b.total_assets],["Liabilities",b.total_liabilities],["Equity",b.total_equity],["Cash & bank movement",c.net_cash_bank_movement]].map(x=>'<div><small>'+x[0]+'</small><strong>'+money(x[1])+'</strong></div>').join("")+'</div><p class="report-note">Based on posted journals. Cash & bank is a ledger movement summary, not a statutory cash flow statement.</p>';return;}
-      const map={sales:["/erp/sales/invoices",["Invoice","Date","Customer","Total","Status"],r=>[r.invoice_number||("#"+r.id),r.invoice_date||"",r.customer_name||"—",money(r.grand_total),r.status||"posted"]],purchases:["/erp/purchases/bills",["Bill","Date","Supplier","Total","Status"],r=>[r.purchase_number||("#"+r.id),r.purchase_date||"",r.supplier_name||"—",money(r.grand_total),r.status||"received"]],inventory:["/erp/products",["SKU","Product","Unit","Selling price","GST"],r=>[r.sku,r.name,r.unit,money(r.selling_price),r.gst_rate+"%"]],customers:["/erp/customers",["Customer","GSTIN","State","Phone"],r=>[r.name,r.gstin||"—",r.state_code||"—",r.phone||"—"]],suppliers:["/erp/suppliers",["Supplier","GSTIN","State","Phone"],r=>[r.name,r.gstin||"—",r.state_code||"—",r.phone||"—"]]};
-      const [url,heads,fn]=map[key],data=await api(url);$("module-content").innerHTML=makeTable(heads,(data.items||[]).map(fn));
+      if(key==="accounting"){
+        const [a,t,j]=await Promise.all([api("/erp/accounting/accounts"),api("/erp/accounting/trial-balance"),api("/erp/accounting/journals?limit=20")]);
+        $("module-content").innerHTML='<div class="report-summary"><div><small>Debits</small><strong>'+money(t.total_debit)+'</strong></div><div><small>Credits</small><strong>'+money(t.total_credit)+'</strong></div><div><small>Trial balance</small><strong>'+(t.balanced?"Balanced":"Review")+'</strong></div></div><h3 class="section-heading">Chart of accounts</h3>'+makeTable(["Code","Account","Type"],a.items.map(x=>[x.code,x.name,x.account_type]))+'<h3 class="section-heading">Recent journal entries</h3>'+makeTable(["Journal","Date","Narration","Status"],j.items.map(x=>[x.journal_number,x.entry_date,x.narration,x.status]));return;
+      }
+      if(key==="reports"){
+        const today=new Date().toISOString().slice(0,10),start=today.slice(0,4)+"-01-01";
+        const [p,b,c]=await Promise.all([api("/erp/accounting/profit-loss?from_date="+start+"&to_date="+today),api("/erp/accounting/balance-sheet?as_of="+today),api("/erp/accounting/cash-flow?from_date="+start+"&to_date="+today)]);
+        $("module-content").innerHTML='<div class="report-summary">'+[["Income",p.total_income],["Expenses",p.total_expenses],["Net profit",p.net_profit],["Assets",b.total_assets],["Liabilities",b.total_liabilities],["Equity",b.total_equity],["Cash & bank movement",c.net_cash_bank_movement]].map(x=>'<div><small>'+x[0]+'</small><strong>'+money(x[1])+'</strong></div>').join("")+'</div><p class="report-note">Based on posted journals. Cash & bank is a ledger movement summary, not a statutory cash flow statement.</p>';return;
+      }
+      const map={sales:["/erp/sales/invoices",["Invoice","Date","Customer","Total","Paid","Balance","Status"],r=>[r.invoice_number,r.invoice_date,r.customer_name,money(r.grand_total),money(r.amount_paid),money(r.balance_due),r.status]],purchases:["/erp/purchases/bills",["Bill","Date","Supplier","Total","Paid","Balance","Status"],r=>[r.purchase_number,r.purchase_date,r.supplier_name,money(r.grand_total),money(r.amount_paid),money(r.balance_due),r.status]],inventory:["/erp/products",["SKU","Product","Unit","Selling price","GST","Stock","Reorder"],r=>[r.sku,r.name,r.unit,money(r.selling_price),r.gst_rate+"%",r.stock_qty||"0",r.reorder_level||"0"]],customers:["/erp/customers",["Customer","GSTIN","State","Phone","Email"],r=>[r.name,r.gstin||"—",r.state_code||"—",r.phone||"—",r.email||"—"]],suppliers:["/erp/suppliers",["Supplier","GSTIN","State","Phone"],r=>[r.name,r.gstin||"—",r.state_code||"—",r.phone||"—"]]};
+      const [url,heads,fn]=map[key],data=await api(url);moduleCache[key]=data.items||[];
+      if(key==="sales")moduleCache.customers=(await api("/erp/customers")).items||[];
+      if(key==="purchases")moduleCache.suppliers=(await api("/erp/suppliers")).items||[];
+      if(["sales","purchases"].includes(key))moduleCache.products=(await api("/erp/products")).items||[];
+      $("module-content").innerHTML=makeTable(heads,(data.items||[]).map(fn));
     }catch(e){$("module-content").innerHTML='<div class="empty-state">'+esc(e.message)+'</div>';}
   }
   $("module-nav").addEventListener("click",e=>{const a=e.target.closest("[data-page]");if(!a)return;e.preventDefault();$("module-nav").querySelectorAll(".nav-item").forEach(n=>n.classList.toggle("active",n===a));openModule(a.dataset.page);});
