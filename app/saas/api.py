@@ -1685,6 +1685,151 @@ def get_general_ledger(
     }
 
 
+
+@app.get("/erp/accounting/journals", tags=["accounting"])
+def list_accounting_journals(
+    from_date: date | None = None,
+    to_date: date | None = None,
+    limit: int = 100,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date cannot be after to_date.")
+    statement = select(JournalEntry).where(
+        JournalEntry.company_id == linked.company_id,
+        JournalEntry.status == "posted",
+    )
+    if from_date:
+        statement = statement.where(JournalEntry.entry_date >= datetime.combine(from_date, time.min))
+    if to_date:
+        statement = statement.where(JournalEntry.entry_date < datetime.combine(to_date + timedelta(days=1), time.min))
+    rows = session.scalars(statement.order_by(JournalEntry.entry_date.desc(), JournalEntry.id.desc()).limit(min(max(limit, 1), 500))).all()
+    return {"items": [_journal_payload(row) for row in rows]}
+
+
+def _account_activity(session: Session, company_id: int, start: date | None, end: date | None, as_of: date | None = None):
+    statement = (
+        select(LedgerAccount.id, LedgerAccount.code, LedgerAccount.name,
+               LedgerAccount.account_type,
+               func.coalesce(func.sum(JournalLine.debit), 0).label("debit"),
+               func.coalesce(func.sum(JournalLine.credit), 0).label("credit"))
+        .join(JournalLine, JournalLine.account_id == LedgerAccount.id)
+        .join(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id)
+        .where(LedgerAccount.company_id == company_id,
+               LedgerAccount.active.is_(True),
+               JournalEntry.company_id == company_id,
+               JournalEntry.status == "posted")
+        .group_by(LedgerAccount.id, LedgerAccount.code, LedgerAccount.name, LedgerAccount.account_type)
+    )
+    if start:
+        statement = statement.where(JournalEntry.entry_date >= datetime.combine(start, time.min))
+    if end:
+        statement = statement.where(JournalEntry.entry_date < datetime.combine(end + timedelta(days=1), time.min))
+    if as_of:
+        statement = statement.where(JournalEntry.entry_date < datetime.combine(as_of + timedelta(days=1), time.min))
+    return session.execute(statement.order_by(LedgerAccount.code)).all()
+
+
+@app.get("/erp/accounting/profit-loss", tags=["accounting"])
+def get_profit_loss(
+    from_date: date,
+    to_date: date,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    if from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date cannot be after to_date.")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = _account_activity(session, linked.company_id, from_date, to_date)
+    income, expenses, income_total, expense_total = [], [], Decimal("0"), Decimal("0")
+    for account_id, code, name, kind, debit, credit in rows:
+        debit, credit = _money(Decimal(debit or 0)), _money(Decimal(credit or 0))
+        if kind == "income":
+            amount = credit - debit
+            income.append({"account_id": account_id, "code": code, "name": name, "amount": str(_money(amount))})
+            income_total += amount
+        elif kind == "expense":
+            amount = debit - credit
+            expenses.append({"account_id": account_id, "code": code, "name": name, "amount": str(_money(amount))})
+            expense_total += amount
+    net = _money(income_total - expense_total)
+    return {"from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+            "income": income, "expenses": expenses,
+            "total_income": str(_money(income_total)), "total_expenses": str(_money(expense_total)),
+            "net_profit": str(net), "net_loss": str(max(-net, Decimal("0"))),
+            "basis": "posted_journals"}
+
+
+@app.get("/erp/accounting/balance-sheet", tags=["accounting"])
+def get_balance_sheet(
+    as_of: date,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = _account_activity(session, linked.company_id, None, None, as_of)
+    assets, liabilities, equity = [], [], []
+    totals = {"asset": Decimal("0"), "liability": Decimal("0"), "equity": Decimal("0")}
+    current_earnings = Decimal("0")
+    for account_id, code, name, kind, debit, credit in rows:
+        debit, credit = _money(Decimal(debit or 0)), _money(Decimal(credit or 0))
+        if kind == "asset":
+            amount = debit - credit
+        elif kind in {"liability", "equity"}:
+            amount = credit - debit
+        elif kind == "income":
+            current_earnings += credit - debit
+            continue
+        elif kind == "expense":
+            current_earnings -= debit - credit
+            continue
+        else:
+            continue
+        totals[kind] += amount
+        target = {"asset": assets, "liability": liabilities, "equity": equity}[kind]
+        target.append({"account_id": account_id, "code": code, "name": name, "balance": str(_money(amount))})
+    totals["equity"] += current_earnings
+    if current_earnings:
+        equity.append({"code": "CURRENT_EARNINGS", "name": "Current period earnings", "balance": str(_money(current_earnings))})
+    difference = _money(totals["asset"] - totals["liability"] - totals["equity"])
+    return {"as_of": as_of.isoformat(), "assets": assets, "liabilities": liabilities, "equity": equity,
+            "total_assets": str(_money(totals["asset"])), "total_liabilities": str(_money(totals["liability"])),
+            "total_equity": str(_money(totals["equity"])), "balanced": difference == 0,
+            "difference": str(difference), "basis": "posted_journals"}
+
+
+@app.get("/erp/accounting/cash-flow", tags=["accounting"])
+def get_cash_bank_summary(
+    from_date: date,
+    to_date: date,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    if from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date cannot be after to_date.")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = _account_activity(session, linked.company_id, from_date, to_date)
+    items, net = [], Decimal("0")
+    for account_id, code, name, kind, debit, credit in rows:
+        if code not in {"1000", "1010"}:
+            continue
+        debit, credit = _money(Decimal(debit or 0)), _money(Decimal(credit or 0))
+        movement = debit - credit
+        net += movement
+        items.append({"account_id": account_id, "code": code, "name": name,
+                      "cash_in": str(debit), "cash_out": str(credit), "net_movement": str(_money(movement))})
+    return {"from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+            "accounts": items, "net_cash_bank_movement": str(_money(net)),
+            "report_type": "cash_and_bank_ledger_movement",
+            "note": "This is a cash/bank ledger movement summary, not a classified statutory cash flow statement."}
+
+
 @app.get("/erp/customers", tags=["erp"])
 def list_erp_customers(
     membership: dict = Depends(current_membership),
