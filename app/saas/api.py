@@ -24,6 +24,7 @@ from app.db import (
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
     SaaSTenantMembership, Warehouse, Customer, Product, ProductStock, StockMovement,
     AuditLog, Supplier, Invoice, InvoiceItem, Payment, Purchase, PurchaseItem, SupplierPayment,
+    LedgerAccount, JournalEntry, JournalLine,
     hash_password, verify_password,
 )
 from app.saas.security import (
@@ -97,6 +98,19 @@ class SalesPaymentRequest(BaseModel):
     method: str = Field(default="UPI", min_length=2, max_length=30)
     reference: str = Field(default="", max_length=100)
     paid_at: datetime | None = None
+
+
+class JournalLineRequest(BaseModel):
+    account_id: int = Field(gt=0)
+    description: str = Field(default="", max_length=250)
+    debit: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    credit: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+
+
+class JournalEntryRequest(BaseModel):
+    entry_date: date | None = None
+    narration: str = Field(default="", max_length=500)
+    lines: list[JournalLineRequest] = Field(min_length=2, max_length=100)
 
 
 class MembershipRoleRequest(BaseModel):
@@ -1291,6 +1305,254 @@ def cancel_purchase_bill(
     except (IntegrityError, SQLAlchemyError) as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Purchase bill cancellation could not be saved.") from exc
+
+
+
+# A deliberately small starter chart. Account codes are stable API references;
+# companies can extend the chart later without sharing account rows across tenants.
+_DEFAULT_CHART = (
+    ("1000", "Cash", "asset"),
+    ("1010", "Bank", "asset"),
+    ("1100", "Accounts Receivable", "asset"),
+    ("1200", "Input CGST", "asset"),
+    ("1210", "Input SGST", "asset"),
+    ("1220", "Input IGST", "asset"),
+    ("1300", "Inventory", "asset"),
+    ("2000", "Accounts Payable", "liability"),
+    ("2100", "Output CGST", "liability"),
+    ("2110", "Output SGST", "liability"),
+    ("2120", "Output IGST", "liability"),
+    ("3000", "Owner's Capital", "equity"),
+    ("3100", "Retained Earnings", "equity"),
+    ("4000", "Sales Revenue", "income"),
+    ("4100", "Other Income", "income"),
+    ("5000", "Cost of Goods Sold", "expense"),
+    ("5100", "Purchases", "expense"),
+    ("5200", "Rent Expense", "expense"),
+    ("5300", "Salary Expense", "expense"),
+    ("5400", "Other Expenses", "expense"),
+)
+_ACCOUNT_TYPES = {"asset", "liability", "equity", "income", "expense"}
+
+
+def _ensure_default_chart(session: Session, company_id: int) -> None:
+    existing = set(session.scalars(select(LedgerAccount.code).where(
+        LedgerAccount.company_id == company_id
+    )).all())
+    for code, name, account_type in _DEFAULT_CHART:
+        if code not in existing:
+            session.add(LedgerAccount(
+                company_id=company_id, code=code, name=name,
+                account_type=account_type, is_system=True, active=True,
+            ))
+    session.flush()
+
+
+def _journal_payload(entry: JournalEntry) -> dict:
+    return {
+        "id": entry.id, "entry_number": entry.entry_number,
+        "entry_date": entry.entry_date.date().isoformat(),
+        "narration": entry.narration, "status": entry.status,
+        "source_type": entry.source_type, "source_id": entry.source_id,
+        "total_debit": str(_money(sum((Decimal(line.debit) for line in entry.lines), Decimal("0")))),
+        "total_credit": str(_money(sum((Decimal(line.credit) for line in entry.lines), Decimal("0")))),
+        "lines": [{
+            "id": line.id, "account_id": line.account_id,
+            "account_code": line.account.code, "account_name": line.account.name,
+            "description": line.description, "debit": str(line.debit),
+            "credit": str(line.credit),
+        } for line in entry.lines],
+    }
+
+
+@app.get("/erp/accounting/accounts", tags=["accounting"])
+def list_ledger_accounts(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    try:
+        _ensure_default_chart(session, linked.company_id)
+        session.commit()
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Chart of accounts could not be initialized.") from exc
+    rows = session.scalars(select(LedgerAccount).where(
+        LedgerAccount.company_id == linked.company_id,
+        LedgerAccount.active.is_(True),
+    ).order_by(LedgerAccount.code)).all()
+    return {"items": [{
+        "id": row.id, "code": row.code, "name": row.name,
+        "account_type": row.account_type, "is_system": row.is_system,
+    } for row in rows]}
+
+
+@app.post("/erp/accounting/journals", status_code=status.HTTP_201_CREATED, tags=["accounting"])
+def create_manual_journal(
+    payload: JournalEntryRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    if len(payload.lines) < 2:
+        raise HTTPException(status_code=422, detail="A journal requires at least two lines.")
+    debit_total = _money(sum((Decimal(line.debit) for line in payload.lines), Decimal("0")))
+    credit_total = _money(sum((Decimal(line.credit) for line in payload.lines), Decimal("0")))
+    if debit_total <= 0 or debit_total != credit_total:
+        raise HTTPException(status_code=422, detail="Journal debits and credits must be equal and greater than zero.")
+    seen_accounts: set[int] = set()
+    accounts: dict[int, LedgerAccount] = {}
+    for line in payload.lines:
+        debit, credit = _money(Decimal(line.debit)), _money(Decimal(line.credit))
+        if (debit > 0 and credit > 0) or (debit == 0 and credit == 0):
+            raise HTTPException(status_code=422, detail="Each journal line must contain either a debit or a credit.")
+        if line.account_id in seen_accounts:
+            raise HTTPException(status_code=422, detail="An account may appear only once in a manual journal.")
+        seen_accounts.add(line.account_id)
+        account = session.scalar(select(LedgerAccount).where(
+            LedgerAccount.id == line.account_id,
+            LedgerAccount.company_id == linked.company_id,
+            LedgerAccount.active.is_(True),
+        ))
+        if not account:
+            raise HTTPException(status_code=404, detail="A journal account was not found in this workspace.")
+        accounts[line.account_id] = account
+    entry = JournalEntry(
+        company_id=linked.company_id, branch_id=linked.branch_id,
+        entry_number=f"PENDING-{uuid.uuid4().hex}",
+        entry_date=datetime.combine(payload.entry_date or date.today(), time.min),
+        narration=payload.narration.strip(), source_type=None, source_id=None,
+        status="posted", created_by=membership["email"][:254],
+    )
+    for line in payload.lines:
+        entry.lines.append(JournalLine(
+            account_id=line.account_id, description=line.description.strip(),
+            debit=_money(Decimal(line.debit)), credit=_money(Decimal(line.credit)),
+        ))
+    try:
+        session.add(entry)
+        session.flush()
+        entry.entry_number = f"JRN-{linked.company_id}-{entry.entry_date:%Y%m%d}-{entry.id}"
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="manual_journal_posted", entity_type="JournalEntry",
+            entity_id=str(entry.id),
+            details=json.dumps({"entry_number": entry.entry_number, "debit": str(debit_total)}),
+        ))
+        session.commit()
+        session.refresh(entry)
+        return _journal_payload(entry)
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Journal entry could not be posted.") from exc
+
+
+@app.get("/erp/accounting/trial-balance", tags=["accounting"])
+def get_trial_balance(
+    as_of: date | None = None,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    _ensure_default_chart(session, linked.company_id)
+    rows = session.execute(
+        select(
+            LedgerAccount.id, LedgerAccount.code, LedgerAccount.name,
+            LedgerAccount.account_type,
+            func.coalesce(func.sum(JournalLine.debit), 0),
+            func.coalesce(func.sum(JournalLine.credit), 0),
+        )
+        .outerjoin(JournalLine, JournalLine.account_id == LedgerAccount.id)
+        .outerjoin(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id)
+        .where(
+            LedgerAccount.company_id == linked.company_id,
+            LedgerAccount.active.is_(True),
+            (JournalEntry.id.is_(None)) | (
+                (JournalEntry.company_id == linked.company_id)
+                & (JournalEntry.status == "posted")
+                & (JournalEntry.entry_date < datetime.combine(as_of + timedelta(days=1), time.min) if as_of else True)
+            ),
+        )
+        .group_by(LedgerAccount.id)
+        .order_by(LedgerAccount.code)
+    ).all()
+    items = []
+    total_debit = total_credit = Decimal("0")
+    for account_id, code, name, account_type, debit, credit in rows:
+        debit, credit = _money(Decimal(debit or 0)), _money(Decimal(credit or 0))
+        balance = debit - credit
+        closing_debit = max(balance, Decimal("0"))
+        closing_credit = max(-balance, Decimal("0"))
+        total_debit += closing_debit
+        total_credit += closing_credit
+        items.append({
+            "account_id": account_id, "code": code, "name": name,
+            "account_type": account_type, "debit": str(closing_debit),
+            "credit": str(closing_credit),
+        })
+    session.commit()
+    return {
+        "as_of": as_of.isoformat() if as_of else None,
+        "items": items, "total_debit": str(_money(total_debit)),
+        "total_credit": str(_money(total_credit)),
+        "balanced": _money(total_debit) == _money(total_credit),
+    }
+
+
+@app.get("/erp/accounting/ledger/{account_id}", tags=["accounting"])
+def get_general_ledger(
+    account_id: int,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    account = session.scalar(select(LedgerAccount).where(
+        LedgerAccount.id == account_id,
+        LedgerAccount.company_id == linked.company_id,
+        LedgerAccount.active.is_(True),
+    ))
+    if not account:
+        raise HTTPException(status_code=404, detail="Ledger account not found.")
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date cannot be after to_date.")
+    statement = (
+        select(JournalEntry, JournalLine)
+        .join(JournalLine, JournalLine.journal_entry_id == JournalEntry.id)
+        .where(
+            JournalEntry.company_id == linked.company_id,
+            JournalEntry.status == "posted",
+            JournalLine.account_id == account.id,
+        )
+    )
+    if from_date:
+        statement = statement.where(JournalEntry.entry_date >= datetime.combine(from_date, time.min))
+    if to_date:
+        statement = statement.where(JournalEntry.entry_date < datetime.combine(to_date + timedelta(days=1), time.min))
+    records = session.execute(statement.order_by(JournalEntry.entry_date, JournalEntry.id, JournalLine.id)).all()
+    running = Decimal("0")
+    items = []
+    for entry, line in records:
+        debit, credit = Decimal(line.debit), Decimal(line.credit)
+        running += debit - credit
+        items.append({
+            "journal_id": entry.id, "entry_number": entry.entry_number,
+            "entry_date": entry.entry_date.date().isoformat(),
+            "narration": entry.narration, "description": line.description,
+            "debit": str(debit), "credit": str(credit),
+            "running_balance": str(_money(running)),
+        })
+    return {
+        "account": {"id": account.id, "code": account.code, "name": account.name},
+        "from_date": from_date.isoformat() if from_date else None,
+        "to_date": to_date.isoformat() if to_date else None,
+        "closing_balance": str(_money(running)), "items": items,
+    }
 
 
 @app.get("/erp/customers", tags=["erp"])
