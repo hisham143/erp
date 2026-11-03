@@ -1,11 +1,13 @@
 import pytest
+from datetime import datetime
+from decimal import Decimal
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.saas.api as api_module
-from app.db import Base
+from app.db import Base, SaaSTenantCompany, JournalEntry
 
 
 @pytest.fixture
@@ -132,3 +134,52 @@ def test_owner_cannot_demote_themselves(accounting_client):
         headers=headers, json={"role": "sales"},
     )
     assert changed.status_code == 409  # The sole workspace owner cannot demote themselves.
+
+
+
+def test_source_journal_is_idempotent_and_reversible(accounting_client):
+    headers = create_workspace(accounting_client, "Auto Posting Books", "auto-post@example.com")
+    with api_module.SessionLocal() as session:
+        me = accounting_client.get("/auth/me", headers=headers).json()
+        linked = session.scalar(
+            __import__("sqlalchemy").select(SaaSTenantCompany).where(
+                SaaSTenantCompany.tenant_id == me["tenant_id"]
+            )
+        )
+        membership = {"email": me["email"]}
+        original = api_module._post_source_journal(
+            session, linked, membership, "sales_invoice", "INV-1",
+            datetime(2026, 11, 3), "Test sales invoice",
+            [
+                ("1100", "Accounts receivable", Decimal("118.00"), Decimal("0")),
+                ("4000", "Sales revenue", Decimal("0"), Decimal("100.00")),
+                ("2100", "Output CGST", Decimal("0"), Decimal("9.00")),
+                ("2110", "Output SGST", Decimal("0"), Decimal("9.00")),
+            ],
+        )
+        session.flush()
+        same = api_module._post_source_journal(
+            session, linked, membership, "sales_invoice", "INV-1",
+            datetime(2026, 11, 3), "Duplicate should be ignored",
+            [
+                ("1100", "Accounts receivable", Decimal("118.00"), Decimal("0")),
+                ("4000", "Sales revenue", Decimal("0"), Decimal("100.00")),
+                ("2100", "Output CGST", Decimal("0"), Decimal("9.00")),
+                ("2110", "Output SGST", Decimal("0"), Decimal("9.00")),
+            ],
+        )
+        assert same.id == original.id
+        reversal = api_module._reverse_source_journal(
+            session, linked, membership, "sales_invoice", "INV-1",
+            "sales_invoice_cancel", datetime(2026, 11, 4), "Cancel invoice",
+        )
+        session.commit()
+        assert reversal is not None
+        entries = session.scalars(
+            __import__("sqlalchemy").select(JournalEntry).where(
+                JournalEntry.company_id == linked.company_id
+            )
+        ).all()
+        assert len(entries) == 2
+        assert sum((Decimal(line.debit) for line in reversal.lines), Decimal("0")) == Decimal("118.00")
+        assert sum((Decimal(line.credit) for line in reversal.lines), Decimal("0")) == Decimal("118.00")
