@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.db import (
     SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
-    SaaSTenantMembership, Warehouse, Customer, Product, Supplier, Invoice, InvoiceItem,
+    SaaSTenantMembership, Warehouse, Customer, Product, Supplier, Invoice, InvoiceItem, Payment,
     hash_password, verify_password,
 )
 from app.saas.security import (
@@ -67,6 +67,13 @@ class SalesInvoiceRequest(BaseModel):
     invoice_date: date | None = None
     place_of_supply_state_code: str | None = Field(default=None, min_length=2, max_length=2)
     items: list[SalesInvoiceItemRequest] = Field(min_length=1, max_length=200)
+
+
+class SalesPaymentRequest(BaseModel):
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    method: str = Field(default="UPI", min_length=2, max_length=30)
+    reference: str = Field(default="", max_length=100)
+    paid_at: datetime | None = None
 
 
 class MembershipRoleRequest(BaseModel):
@@ -645,6 +652,12 @@ def _invoice_payload(invoice: Invoice) -> dict:
         "grand_total": str(invoice.grand_total),
         "amount_paid": str(invoice.amount_paid),
         "status": invoice.status,
+        "balance_due": str(_money(Decimal(invoice.grand_total) - Decimal(invoice.amount_paid))),
+        "payments": [{
+            "id": payment.id, "amount": str(payment.amount),
+            "method": payment.method, "reference": payment.reference,
+            "paid_at": payment.paid_at.isoformat(),
+        } for payment in invoice.payments],
         "items": [{
             "id": item.id, "product_id": item.product_id,
             "sku": item.sku_snapshot, "description": item.description_snapshot,
@@ -763,6 +776,62 @@ def create_sales_invoice(
     except (IntegrityError, SQLAlchemyError) as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail="Sales invoice could not be saved.") from exc
+
+
+@app.post("/erp/sales/invoices/{invoice_id}/payments", status_code=status.HTTP_201_CREATED, tags=["sales"])
+def record_sales_payment(
+    invoice_id: int,
+    payload: SalesPaymentRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant", "sales")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    invoice = session.scalar(select(Invoice).where(
+        Invoice.id == invoice_id,
+        Invoice.company_id == linked.company_id,
+    ).with_for_update())
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Sales invoice not found.")
+    if invoice.status in {"cancelled", "void", "draft"}:
+        raise HTTPException(status_code=409, detail="Payments cannot be recorded against this invoice.")
+    amount = _money(Decimal(payload.amount))
+    current_paid = _money(Decimal(invoice.amount_paid))
+    grand_total = _money(Decimal(invoice.grand_total))
+    balance = _money(grand_total - current_paid)
+    if balance <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already fully paid.")
+    if amount > balance:
+        raise HTTPException(status_code=422, detail="Payment cannot exceed the invoice balance due.")
+    method = payload.method.strip()
+    if len(method) < 2:
+        raise HTTPException(status_code=422, detail="Enter a valid payment method.")
+    reference = payload.reference.strip()
+    if reference and session.scalar(select(Payment.id).where(
+        Payment.company_id == linked.company_id,
+        Payment.invoice_id == invoice.id,
+        Payment.reference == reference,
+    )):
+        raise HTTPException(status_code=409, detail="This payment reference is already recorded for the invoice.")
+    payment = Payment(
+        company_id=linked.company_id,
+        invoice_id=invoice.id,
+        amount=amount,
+        method=method,
+        reference=reference,
+        paid_at=payload.paid_at or datetime.now(),
+        recorded_by=membership["email"][:80],
+    )
+    try:
+        session.add(payment)
+        invoice.amount_paid = _money(current_paid + amount)
+        invoice.status = "paid" if invoice.amount_paid >= grand_total else "partially_paid"
+        session.commit()
+        session.refresh(invoice)
+        return _invoice_payload(invoice)
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Payment could not be recorded.") from exc
 
 
 @app.get("/erp/sales/invoices", tags=["sales"])
