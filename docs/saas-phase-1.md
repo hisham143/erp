@@ -208,3 +208,21 @@ Current boundaries:
 - Invoice creation currently records the invoice and its tax snapshots only; it intentionally does not mutate stock or accounting balances. Those must be implemented as coordinated transaction services with dedicated tests before operational use.
 - The existing legacy `invoices.invoice_number` column is globally unique. The generated identifier includes company ID and invoice ID to avoid collisions across companies; configurable per-branch financial-year numbering remains future work.
 - Do not treat this endpoint as production-ready tax compliance or enable public customer use until tax-rule review, accounting/stock integration, auditability, and deployment security gates are complete.
+
+
+## Phase 2.2 — Sales payment recording and invoice balances
+
+Implemented on `feature/erp-foundation`:
+- `POST /erp/sales/invoices/{invoice_id}/payments`: records a customer payment against an invoice belonging to the authenticated tenant's company.
+- Payment entry is limited to owner, admin, manager, accountant, and sales roles. Invoice reads remain tenant/company scoped.
+- The endpoint locks the invoice row where supported by the database, validates the outstanding balance, and records the Payment row plus invoice balance/status update in one database transaction.
+- Partial payments set invoice status to `partially_paid`; full settlement sets it to `paid`. Newly issued invoices retain `issued` until a payment is recorded.
+- Invoice responses now include `balance_due` and payment history (amount, method, reference, timestamp).
+- A repeated non-empty payment reference on the same invoice is rejected to reduce accidental duplicate entry. This is an application-level guard, not a substitute for a provider webhook idempotency key.
+- Automated tests cover partial-to-full settlement, overpayment rejection, duplicate reference rejection, persistence, unauthenticated access, role denial, and cross-tenant invoice isolation.
+
+Boundaries and operational cautions:
+- No database migration was required; the existing Payment table and Invoice.amount_paid/status fields are reused.
+- This slice does not yet integrate payment gateway webhooks, refunds, reversals, bank reconciliation, accounting ledger postings, receipt PDFs, or payment deletion/void workflows.
+- Do not treat client-submitted payment details as proof of bank/gateway settlement. Gateway integrations must verify signed provider callbacks and implement durable idempotency before production use.
+- Do not manually edit invoice balances or delete payment rows; future reversal workflows must create auditable compensating entries.
