@@ -200,7 +200,7 @@
 
   let activeModule="dashboard", moduleCache={};
   function formField(label,name,type="text",required=true,extra=""){return '<label class="erp-field"><span>'+label+'</span><input name="'+name+'" type="'+type+'" '+(required?"required":"")+' '+extra+'></label>';}
-  function selectField(label,name,options){return '<label class="erp-field"><span>'+label+'</span><select name="'+name+'" required>'+options.map(o=>'<option value="'+esc(o[0])+'">'+esc(o[1])+'</option>').join("")+'</select></label>';}
+  function selectField(label,name,options){return '<label class="erp-field"><span>'+label+'</span><select name="'+name+'" required>'+options.map(o=>'<option value="'+esc(o[0])+(String(o[0])===String(state.profile?.state_code) ? '" selected>' : '">')+esc(o[1])+'</option>').join("")+'</select></label>';}
   function showCreateForm(key){
     const data=moduleCache;
     const customerOptions=(data.customers||[]).map(x=>[x.id,x.name]);
