@@ -418,3 +418,126 @@ def test_workspace_member_roles_are_owner_managed_and_tenant_scoped(client_and_s
         session.commit()
     forbidden = client.get("/workspace/members", headers=owner_headers)
     assert forbidden.status_code == 403
+
+
+
+def test_sales_invoice_api_calculates_gst_and_scopes_records_to_tenant(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Customer, Product, Invoice, InvoiceItem
+
+    client, sessions = client_and_sessions
+    first = _register(client, "sales-one@example.com", "Sales Workspace One")
+    second = _register(client, "sales-two@example.com", "Sales Workspace Two")
+    first_setup = _save_unregistered_profile(client, first["access_token"], "Sales Company One")
+    second_setup = _save_unregistered_profile(client, second["access_token"], "Sales Company Two")
+    with sessions() as session:
+        first_customer = Customer(
+            company_id=first_setup["company"]["id"], name="Local Buyer",
+            state_code="32", active=True,
+        )
+        second_customer = Customer(
+            company_id=second_setup["company"]["id"], name="Other Buyer",
+            state_code="32", active=True,
+        )
+        first_product = Product(
+            company_id=first_setup["company"]["id"], sku="SALE-ONE",
+            name="Widget", selling_price=Decimal("100.00"),
+            gst_rate=Decimal("18.00"), active=True,
+        )
+        session.add_all([first_customer, second_customer, first_product])
+        session.commit()
+        first_customer_id = first_customer.id
+        second_customer_id = second_customer.id
+        first_product_id = first_product.id
+
+    first_headers = {"Authorization": f"Bearer {first['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+    created = client.post("/erp/sales/invoices", headers=first_headers, json={
+        "customer_id": first_customer_id,
+        "invoice_date": "2026-11-03",
+        "items": [{"product_id": first_product_id, "quantity": "2", "unit_price": "100"}],
+    })
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["invoice_number"].startswith("INV-")
+    assert body["taxable_total"] == "200.00"
+    assert body["cgst_total"] == "18.00"
+    assert body["sgst_total"] == "18.00"
+    assert body["igst_total"] == "0.00"
+    assert body["grand_total"] == "236.00"
+    assert body["items"][0]["line_total"] == "236.00"
+
+    invoice_id = body["id"]
+    assert client.get(f"/erp/sales/invoices/{invoice_id}", headers=first_headers).status_code == 200
+    assert client.get(f"/erp/sales/invoices/{invoice_id}", headers=second_headers).status_code == 404
+    foreign_customer = client.post("/erp/sales/invoices", headers=first_headers, json={
+        "customer_id": second_customer_id,
+        "items": [{"product_id": first_product_id, "quantity": "1"}],
+    })
+    assert foreign_customer.status_code == 404
+    assert client.get("/erp/sales/invoices", headers=second_headers).json()["items"] == []
+
+    with sessions() as session:
+        saved = session.get(Invoice, invoice_id)
+        assert saved is not None
+        assert len(saved.items) == 1
+        assert saved.items[0].description_snapshot == "Widget"
+
+
+def test_sales_invoice_rejects_invalid_lines_without_partial_records(client_and_sessions):
+    from app.db import Customer, Product, Invoice
+    client, sessions = client_and_sessions
+    owner = _register(client, "sales-invalid@example.com", "Sales Invalid Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Sales Invalid Company")
+    with sessions() as session:
+        customer = Customer(company_id=setup["company"]["id"], name="Buyer", state_code="32")
+        product = Product(
+            company_id=setup["company"]["id"], sku="SALE-INVALID",
+            name="Test Product", selling_price=Decimal("50.00"),
+            gst_rate=Decimal("18.00"),
+        )
+        session.add_all([customer, product])
+        session.commit()
+        customer_id, product_id = customer.id, product.id
+
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    response = client.post("/erp/sales/invoices", headers=headers, json={
+        "customer_id": customer_id,
+        "items": [{"product_id": product_id, "quantity": "1", "discount_amount": "60"}],
+    })
+    assert response.status_code == 422
+    with sessions() as session:
+        assert session.scalar(select(Invoice)) is None
+
+
+def test_sales_invoice_requires_sales_permission_and_authentication(client_and_sessions):
+    client, sessions = client_and_sessions
+    owner = _register(client, "sales-permission@example.com", "Sales Permission Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Sales Permission Company")
+    with sessions() as session:
+        customer = Customer(company_id=setup["company"]["id"], name="Buyer", state_code="32")
+        product = Product(
+            company_id=setup["company"]["id"], sku="SALE-PERMISSION",
+            name="Test Product", selling_price=Decimal("10.00"),
+            gst_rate=Decimal("0.00"),
+        )
+        staff = SaaSIdentity(
+            email="sales-readonly@example.com", full_name="Read Only",
+            password_hash="unused-test-hash", active=True,
+        )
+        session.add_all([customer, product, staff])
+        session.flush()
+        session.add(SaaSTenantMembership(
+            tenant_id=owner["tenant"]["id"], identity_id=staff.id,
+            role="staff", active=True,
+        ))
+        staff_token = create_access_token(staff.id, owner["tenant"]["id"])
+        customer_id, product_id = customer.id, product.id
+        session.commit()
+
+    payload = {"customer_id": customer_id, "items": [{"product_id": product_id, "quantity": "1"}]}
+    assert client.post("/erp/sales/invoices", json=payload).status_code == 401
+    denied = client.post("/erp/sales/invoices", headers={
+        "Authorization": f"Bearer {staff_token}"
+    }, json=payload)
+    assert denied.status_code == 403
