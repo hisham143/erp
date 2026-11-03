@@ -226,3 +226,22 @@ Boundaries and operational cautions:
 - This slice does not yet integrate payment gateway webhooks, refunds, reversals, bank reconciliation, accounting ledger postings, receipt PDFs, or payment deletion/void workflows.
 - Do not treat client-submitted payment details as proof of bank/gateway settlement. Gateway integrations must verify signed provider callbacks and implement durable idempotency before production use.
 - Do not manually edit invoice balances or delete payment rows; future reversal workflows must create auditable compensating entries.
+
+
+## Phase 2.3 — Sales invoice stock control and cancellation
+
+Implemented on `feature/erp-foundation`:
+
+- Invoice creation aggregates quantities by product and deducts from the workspace's linked warehouse in the same database transaction as invoice creation.
+- If no `product_stock` row exists yet, its opening quantity is initialized from the legacy `Product.stock_qty` value. This is a one-time compatibility bridge for the current single-warehouse SaaS mapping.
+- Insufficient stock returns HTTP 409; the invoice, stock row/movement, and quantity changes are rolled back together.
+- Each deduction writes a `StockMovement` row (`sales_invoice`) and an `AuditLog` entry.
+- `POST /erp/sales/invoices/{invoice_id}/cancel` restores quantities, writes reversal stock movements and an audit entry, and marks the invoice cancelled atomically.
+- Cancellation is restricted to owner/admin/manager/accountant. Invoices with any recorded payment cannot be cancelled; a refund/payment-reversal workflow must be implemented first. Repeated cancellation is rejected.
+- Legacy `Product.stock_qty` is synchronized with the linked warehouse quantity for desktop compatibility. This aggregate field is not a correct multi-warehouse total; remove this compatibility coupling when the full warehouse stock UI/service is migrated.
+
+### Concurrency and production limitations
+
+The API applies SQLAlchemy row-level `FOR UPDATE` locks to product and warehouse stock rows. PostgreSQL enforces these locks; SQLite ignores them, so the local SQLite test suite does not prove concurrent oversell protection. Before production launch, add PostgreSQL integration tests and a concurrency test using atomic conditional stock updates or an appropriately isolated transaction strategy. No schema migration is required for this slice because the existing `product_stock`, `stock_movements`, and `audit_logs` tables are reused.
+
+Automated tests cover stock deduction, insufficient-stock rollback, cancellation restoration/idempotency, paid-invoice cancellation rejection, tenant isolation, and role restrictions. Run the complete test suite locally before treating this phase as verified.
