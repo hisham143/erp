@@ -390,6 +390,64 @@ class StockTransferItem(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
 
 
+class LedgerAccount(Base):
+    """Tenant-company chart of accounts; codes are unique within a company."""
+    __tablename__ = "ledger_accounts"
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_ledger_account_company_code"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(30), nullable=False)
+    name: Mapped[str] = mapped_column(String(180), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    parent_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ledger_accounts.id"), nullable=True
+    )
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class JournalEntry(Base):
+    """Immutable posted accounting voucher header."""
+    __tablename__ = "journal_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "source_type", "source_id",
+            name="uq_journal_company_source",
+        ),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
+    entry_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    entry_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    narration: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="posted", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(254), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    lines: Mapped[list["JournalLine"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+
+
+class JournalLine(Base):
+    __tablename__ = "journal_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    journal_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("journal_entries.id"), nullable=False
+    )
+    account_id: Mapped[int] = mapped_column(ForeignKey("ledger_accounts.id"), nullable=False)
+    description: Mapped[str] = mapped_column(String(250), default="", nullable=False)
+    debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    entry: Mapped[JournalEntry] = relationship(back_populates="lines")
+    account: Mapped[LedgerAccount] = relationship()
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
