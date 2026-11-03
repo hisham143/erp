@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 from pathlib import Path
 from typing import Generator
