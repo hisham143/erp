@@ -1458,25 +1458,33 @@ def get_trial_balance(
     _require_roles(membership, "owner", "admin", "manager", "accountant")
     linked = _tenant_erp_context(session, membership["tenant_id"])
     _ensure_default_chart(session, linked.company_id)
+    totals = (
+        select(
+            JournalLine.account_id.label("account_id"),
+            func.sum(JournalLine.debit).label("debit"),
+            func.sum(JournalLine.credit).label("credit"),
+        )
+        .join(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id)
+        .where(
+            JournalEntry.company_id == linked.company_id,
+            JournalEntry.status == "posted",
+            (JournalEntry.entry_date < datetime.combine(as_of + timedelta(days=1), time.min)) if as_of else True,
+        )
+        .group_by(JournalLine.account_id)
+        .subquery()
+    )
     rows = session.execute(
         select(
             LedgerAccount.id, LedgerAccount.code, LedgerAccount.name,
             LedgerAccount.account_type,
-            func.coalesce(func.sum(JournalLine.debit), 0),
-            func.coalesce(func.sum(JournalLine.credit), 0),
+            func.coalesce(totals.c.debit, 0),
+            func.coalesce(totals.c.credit, 0),
         )
-        .outerjoin(JournalLine, JournalLine.account_id == LedgerAccount.id)
-        .outerjoin(JournalEntry, JournalEntry.id == JournalLine.journal_entry_id)
+        .outerjoin(totals, totals.c.account_id == LedgerAccount.id)
         .where(
             LedgerAccount.company_id == linked.company_id,
             LedgerAccount.active.is_(True),
-            (JournalEntry.id.is_(None)) | (
-                (JournalEntry.company_id == linked.company_id)
-                & (JournalEntry.status == "posted")
-                & (JournalEntry.entry_date < datetime.combine(as_of + timedelta(days=1), time.min) if as_of else True)
-            ),
         )
-        .group_by(LedgerAccount.id)
         .order_by(LedgerAccount.code)
     ).all()
     items = []
