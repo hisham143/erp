@@ -852,6 +852,17 @@ def create_sales_invoice(
             entity_id=str(invoice.id),
             details=json.dumps({"invoice_number": invoice.invoice_number, "stock_deducted": {str(k): str(v) for k, v in quantities.items()}}),
         ))
+        _post_source_journal(
+            session, linked, membership, "sales_invoice", str(invoice.id),
+            invoice.invoice_date, f"Sales invoice {invoice.invoice_number}",
+            [
+                ("1100", "Accounts receivable", invoice.grand_total, Decimal("0")),
+                ("4000", "Sales revenue", Decimal("0"), invoice.taxable_total),
+                ("2100", "Output CGST", Decimal("0"), invoice.cgst_total),
+                ("2110", "Output SGST", Decimal("0"), invoice.sgst_total),
+                ("2120", "Output IGST", Decimal("0"), invoice.igst_total),
+            ],
+        )
         session.commit()
         session.refresh(invoice)
         return _invoice_payload(invoice)
@@ -909,8 +920,18 @@ def record_sales_payment(
     )
     try:
         session.add(payment)
+        session.flush()
         invoice.amount_paid = _money(current_paid + amount)
         invoice.status = "paid" if invoice.amount_paid >= grand_total else "partially_paid"
+        cash_code = "1000" if method.lower() == "cash" else "1010"
+        _post_source_journal(
+            session, linked, membership, "sales_payment", str(payment.id),
+            payment.paid_at, f"Customer receipt for invoice {invoice.invoice_number}",
+            [
+                (cash_code, "Customer payment received", amount, Decimal("0")),
+                ("1100", "Accounts receivable settled", Decimal("0"), amount),
+            ],
+        )
         session.commit()
         session.refresh(invoice)
         return _invoice_payload(invoice)
@@ -963,6 +984,11 @@ def cancel_sales_invoice(
                 quantity_delta=quantity, reason="sales_invoice_cancel",
                 reference=invoice.invoice_number, created_by=membership["email"][:80],
             ))
+        _reverse_source_journal(
+            session, linked, membership, "sales_invoice", str(invoice.id),
+            "sales_invoice_cancel", datetime.utcnow(),
+            f"Cancellation reversal for {invoice.invoice_number}",
+        )
         invoice.status = "cancelled"
         session.add(AuditLog(
             company_id=linked.company_id, username=membership["email"][:80],
@@ -1160,6 +1186,17 @@ def create_purchase_bill(
             entity_id=str(purchase.id),
             details=json.dumps({"purchase_number": purchase.purchase_number, "stock_received": {str(k): str(v) for k, v in quantities.items()}}),
         ))
+        _post_source_journal(
+            session, linked, membership, "purchase_bill", str(purchase.id),
+            purchase.purchase_date, f"Purchase bill {purchase.purchase_number}",
+            [
+                ("1300", "Inventory received", purchase.taxable_total, Decimal("0")),
+                ("1200", "Input CGST", purchase.cgst_total, Decimal("0")),
+                ("1210", "Input SGST", purchase.sgst_total, Decimal("0")),
+                ("1220", "Input IGST", purchase.igst_total, Decimal("0")),
+                ("2000", "Accounts payable", Decimal("0"), purchase.grand_total),
+            ],
+        )
         session.commit()
         session.refresh(purchase)
         return _purchase_payload(purchase)
@@ -1225,13 +1262,24 @@ def record_supplier_payment(
     )):
         raise HTTPException(status_code=409, detail="This payment reference already exists for the purchase.")
     try:
-        session.add(SupplierPayment(
+        supplier_payment = SupplierPayment(
             company_id=linked.company_id, purchase_id=purchase.id, amount=amount,
             method=payload.method.strip(), reference=reference,
             paid_at=payload.paid_at or datetime.utcnow(),
             recorded_by=membership["email"][:80],
-        ))
+        )
+        session.add(supplier_payment)
+        session.flush()
         purchase.amount_paid = _money(Decimal(purchase.amount_paid or 0) + amount)
+        cash_code = "1000" if supplier_payment.method.lower() == "cash" else "1010"
+        _post_source_journal(
+            session, linked, membership, "supplier_payment", str(supplier_payment.id),
+            supplier_payment.paid_at, f"Supplier payment for {purchase.purchase_number}",
+            [
+                ("2000", "Accounts payable settled", amount, Decimal("0")),
+                (cash_code, "Supplier payment paid", Decimal("0"), amount),
+            ],
+        )
         session.add(AuditLog(
             company_id=linked.company_id, username=membership["email"][:80],
             action="supplier_payment_recorded", entity_type="Purchase",
@@ -1289,6 +1337,11 @@ def cancel_purchase_bill(
                 quantity_delta=-quantity, reason="purchase_cancel",
                 reference=purchase.purchase_number, created_by=membership["email"][:80],
             ))
+        _reverse_source_journal(
+            session, linked, membership, "purchase_bill", str(purchase.id),
+            "purchase_bill_cancel", datetime.utcnow(),
+            f"Cancellation reversal for {purchase.purchase_number}",
+        )
         purchase.status = "cancelled"
         session.add(AuditLog(
             company_id=linked.company_id, username=membership["email"][:80],
@@ -1346,6 +1399,75 @@ def _ensure_default_chart(session: Session, company_id: int) -> None:
                 account_type=account_type, is_system=True, active=True,
             ))
     session.flush()
+
+
+def _post_source_journal(
+    session: Session, linked: SaaSTenantCompany, membership: dict,
+    source_type: str, source_id: str, entry_date: datetime,
+    narration: str, lines: list[tuple[str, str, Decimal, Decimal]],
+) -> JournalEntry:
+    """Post one balanced, company-scoped journal per operational source."""
+    existing = session.scalar(select(JournalEntry).where(
+        JournalEntry.company_id == linked.company_id,
+        JournalEntry.source_type == source_type,
+        JournalEntry.source_id == str(source_id),
+    ))
+    if existing:
+        return existing
+    _ensure_default_chart(session, linked.company_id)
+    accounts = {
+        row.code: row for row in session.scalars(select(LedgerAccount).where(
+            LedgerAccount.company_id == linked.company_id,
+            LedgerAccount.active.is_(True),
+        )).all()
+    }
+    debit_total = _money(sum((line[2] for line in lines), Decimal("0")))
+    credit_total = _money(sum((line[3] for line in lines), Decimal("0")))
+    if debit_total <= 0 or debit_total != credit_total:
+        raise HTTPException(status_code=409, detail="Automatic accounting entry is not balanced.")
+    entry = JournalEntry(
+        company_id=linked.company_id, branch_id=linked.branch_id,
+        entry_number=f"PENDING-{uuid.uuid4().hex}",
+        entry_date=entry_date, narration=narration[:500],
+        source_type=source_type, source_id=str(source_id),
+        status="posted", created_by=membership["email"][:254],
+    )
+    for code, description, debit, credit in lines:
+        account = accounts.get(code)
+        if not account:
+            raise HTTPException(status_code=409, detail=f"Required ledger account {code} is missing.")
+        debit, credit = _money(debit), _money(credit)
+        if (debit > 0 and credit > 0) or (debit == 0 and credit == 0):
+            continue
+        entry.lines.append(JournalLine(
+            account_id=account.id, description=description[:250],
+            debit=debit, credit=credit,
+        ))
+    session.add(entry)
+    session.flush()
+    entry.entry_number = f"AUTO-{linked.company_id}-{entry.entry_date:%Y%m%d}-{entry.id}"
+    return entry
+
+
+def _reverse_source_journal(
+    session: Session, linked: SaaSTenantCompany, membership: dict,
+    source_type: str, source_id: str, reversal_type: str,
+    entry_date: datetime, narration: str,
+) -> JournalEntry | None:
+    original = session.scalar(select(JournalEntry).where(
+        JournalEntry.company_id == linked.company_id,
+        JournalEntry.source_type == source_type,
+        JournalEntry.source_id == str(source_id),
+        JournalEntry.status == "posted",
+    ))
+    if not original:
+        return None
+    return _post_source_journal(
+        session, linked, membership, reversal_type, str(source_id),
+        entry_date, narration,
+        [(line.account.code, f"Reversal: {line.description}",
+          Decimal(line.credit), Decimal(line.debit)) for line in original.lines],
+    )
 
 
 def _journal_payload(entry: JournalEntry) -> dict:
