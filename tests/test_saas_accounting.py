@@ -126,5 +126,9 @@ def test_manual_journal_rejects_unbalanced_or_foreign_account(accounting_client)
 
 def test_accounting_endpoints_require_accounting_role(accounting_client):
     headers = create_workspace(accounting_client, "Sales User Books", "sales-user@example.com")
-    # Owners can manage the chart; the role change endpoint is owner-only.
-    assert accounting_client.get("/erp/accounting/accounts", headers=headers).status_code == 200
+    me = accounting_client.get("/auth/me", headers=headers).json()
+    changed = accounting_client.patch(
+        f"/workspace/members/{me['user_id']}/role",
+        headers=headers, json={"role": "sales"},
+    )
+    assert changed.status_code == 409  # The sole workspace owner cannot demote themselves.
