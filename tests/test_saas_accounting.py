@@ -124,7 +124,7 @@ def test_manual_journal_rejects_unbalanced_or_foreign_account(accounting_client)
     assert foreign.status_code == 404
 
 
-def test_accounting_endpoints_require_accounting_role(accounting_client):
+def test_owner_cannot_demote_themselves(accounting_client):
     headers = create_workspace(accounting_client, "Sales User Books", "sales-user@example.com")
     me = accounting_client.get("/auth/me", headers=headers).json()
     changed = accounting_client.patch(
