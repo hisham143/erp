@@ -379,3 +379,45 @@ def test_financial_reports_reject_invalid_date_ranges(accounting_client):
         "/erp/accounting/journals?from_date=2026-12-01&to_date=2026-11-01",
         headers=headers,
     ).status_code == 422
+
+
+def test_workspace_can_create_customer_supplier_and_product_masters(accounting_client):
+    headers = create_workspace(accounting_client, "Master UI", "master-ui@example.com")
+    customer = accounting_client.post("/erp/customers", headers=headers, json={
+        "name": "Walk-in Test Customer", "state_code": "10", "phone": "9000000001"
+    })
+    assert customer.status_code == 201, customer.text
+    assert customer.json()["name"] == "Walk-in Test Customer"
+
+    supplier = accounting_client.post("/erp/suppliers", headers=headers, json={
+        "name": "Test Supplier", "state_code": "10", "phone": "9000000002"
+    })
+    assert supplier.status_code == 201, supplier.text
+
+    product = accounting_client.post("/erp/products", headers=headers, json={
+        "sku": "MASTER-UI-001", "name": "Test Product", "unit": "Nos",
+        "selling_price": "100.00", "purchase_price": "70.00", "gst_rate": "18",
+        "opening_stock": "12", "reorder_level": "2"
+    })
+    assert product.status_code == 201, product.text
+    assert product.json()["stock_qty"] == "12.000"
+
+    assert any(x["id"] == customer.json()["id"] for x in accounting_client.get("/erp/customers", headers=headers).json()["items"])
+    assert any(x["id"] == supplier.json()["id"] for x in accounting_client.get("/erp/suppliers", headers=headers).json()["items"])
+    listed_product = next(x for x in accounting_client.get("/erp/products", headers=headers).json()["items"] if x["id"] == product.json()["id"])
+    assert listed_product["stock_qty"] == "12.000"
+
+
+def test_master_creation_is_tenant_scoped_and_rejects_duplicate_sku(accounting_client):
+    first = create_workspace(accounting_client, "Master One", "master-one@example.com")
+    second = create_workspace(accounting_client, "Master Two", "master-two@example.com")
+    created = accounting_client.post("/erp/products", headers=first, json={
+        "sku": "TENANT-SKU-UNIQUE", "name": "Tenant Product", "selling_price": "10",
+        "purchase_price": "5", "gst_rate": "5", "opening_stock": "3", "reorder_level": "1"
+    })
+    assert created.status_code == 201, created.text
+    duplicate = accounting_client.post("/erp/products", headers=second, json={
+        "sku": "TENANT-SKU-UNIQUE", "name": "Duplicate SKU", "selling_price": "10"
+    })
+    assert duplicate.status_code == 409
+    assert accounting_client.get("/erp/products", headers=second).json()["items"] == []
