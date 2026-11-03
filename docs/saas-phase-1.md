@@ -177,3 +177,15 @@ This is an initial provisioning bridge, not yet the complete cloud ERP service b
 ### Migration and verification gate
 
 The new migration is additive and does not rewrite or delete existing company, branch, warehouse, customer, invoice, stock, or backup data. Before applying it to a local database, close the desktop application and API, make a new timestamped backup without overwriting any prior backup, verify that the backup can be opened, and inspect the current Alembic revision. Then apply the migration and run the complete automated suite, Alembic check, and browser E2E test. Never run this migration against production data before a separate disposable PostgreSQL rehearsal and restore drill.
+
+
+## Phase 1.5 — tenant authorization and ERP master read boundary
+
+Implemented on `feature/erp-foundation`:
+- `GET /workspace/members`: owner/admin-only member listing, scoped to the authenticated tenant.
+- `PATCH /workspace/members/{identity_id}/role`: owner-only role update for an existing active non-owner member. The API does not allow changing the owner role through this endpoint.
+- `GET /erp/context`: resolves the authenticated tenant's mapped company, branch, and warehouse and rejects inactive or inconsistent context.
+- `GET /erp/customers`, `GET /erp/products`, and `GET /erp/suppliers`: read-only master-data endpoints filtered by the tenant's mapped operational company.
+- Automated tests seed two separate tenant companies and verify cross-tenant master records are not returned; role tests verify owner/admin permissions and tenant membership scoping.
+
+Supported membership roles currently recognized by the role-management endpoint: owner, admin, manager, accountant, sales, and staff. Member invitations, identity provisioning, branch/warehouse-level grants, transactional APIs, write APIs, and audit/event logging are not part of this slice yet. Do not treat this as production-ready authorization until those controls and the broader security review are complete.
