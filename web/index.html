@@ -13,11 +13,19 @@
     <aside class="sidebar" aria-label="Main navigation">
       <a class="brand" href="/" aria-label="ERP Cloud home"><span class="brand-mark">E</span><span>ERP <b>Cloud</b></span></a>
       <div class="workspace-chip"><span class="status-dot"></span><span id="workspace-label">Your workspace</span></div>
-      <nav class="side-nav">
+      <nav class="side-nav" id="module-nav">
         <span class="nav-caption">WORKSPACE</span>
-        <a class="nav-item active" href="#setup"><span class="nav-icon">▦</span> Business setup</a>
-        <span class="nav-caption nav-caption-spaced">YOUR ERP</span>
-        <div class="nav-muted">Modules will appear as they are enabled for your workspace.</div>
+        <a class="nav-item active" href="#dashboard" data-page="dashboard"><span class="nav-icon">▦</span> Dashboard</a>
+        <span class="nav-caption nav-caption-spaced">OPERATIONS</span>
+        <a class="nav-item" href="#sales" data-page="sales"><span class="nav-icon">↗</span> Sales & invoices</a>
+        <a class="nav-item" href="#purchases" data-page="purchases"><span class="nav-icon">↙</span> Purchases</a>
+        <a class="nav-item" href="#inventory" data-page="inventory"><span class="nav-icon">◇</span> Inventory</a>
+        <a class="nav-item" href="#customers" data-page="customers"><span class="nav-icon">♙</span> Customers</a>
+        <a class="nav-item" href="#suppliers" data-page="suppliers"><span class="nav-icon">♧</span> Suppliers</a>
+        <a class="nav-item" href="#accounting" data-page="accounting"><span class="nav-icon">▤</span> Accounting</a>
+        <a class="nav-item" href="#reports" data-page="reports"><span class="nav-icon">▥</span> Reports</a>
+        <span class="nav-caption nav-caption-spaced">SETUP</span>
+        <a class="nav-item" href="#setup" data-page="business"><span class="nav-icon">⚙</span> Business setup</a>
       </nav>
       <div class="sidebar-bottom"><span class="secure-mark">●</span> Private business workspace</div>
     </aside>
@@ -112,6 +120,15 @@
         <section id="complete-view" class="complete-view" hidden>
           <div class="complete-card"><div class="complete-icon">✓</div><span class="eyebrow">BUSINESS PROFILE SAVED</span><h1>Your workspace is taking shape.</h1><p id="complete-summary"></p><div class="complete-details" id="complete-details"></div><div class="complete-actions"><button class="secondary-button" id="edit-setup-button" type="button">Edit business details</button><button class="secondary-button" id="signout-complete-button" type="button">Sign out</button></div><p class="fine-print">The branch and warehouse names are saved as onboarding details. Actual operational Company, Branch and Warehouse records will be connected in the next implementation stage.</p></div>
         </section>
+        <section id="dashboard-view" class="dashboard-view" hidden>
+          <div class="dash-heading"><div><span class="eyebrow">BUSINESS OVERVIEW</span><h1 id="dash-title">Your business at a glance</h1><p id="dash-subtitle">Live information from your workspace.</p></div><button class="secondary-button" id="refresh-dashboard">↻ Refresh data</button></div>
+          <div class="welcome-banner"><div><span class="eyebrow">ERP CLOUD WORKSPACE</span><h2 id="welcome-title">Welcome back</h2><p>Your business activity, all in one place.</p></div><div class="banner-art">✦</div></div>
+          <div class="kpi-grid" id="kpi-grid"></div>
+          <div class="dashboard-grid"><section class="dash-card"><div class="card-heading"><h3>Recent sales invoices</h3><button class="text-action" data-go="sales">View all →</button></div><div id="recent-sales" class="data-list"></div></section>
+          <section class="dash-card"><div class="card-heading"><h3>Quick actions</h3></div><div class="quick-grid"><button data-go="sales">＋ New invoice</button><button data-go="purchases">＋ Purchase bill</button><button data-go="customers">＋ Customers</button><button data-go="inventory">▦ Products & stock</button><button data-go="accounting">▤ Trial balance</button><button data-go="reports">▥ Financial reports</button></div></section></div>
+          <div class="dashboard-grid lower-grid"><section class="dash-card"><div class="card-heading"><h3>Workspace snapshot</h3></div><div id="workspace-snapshot" class="snapshot-grid"></div></section><section class="dash-card"><div class="card-heading"><h3>Cash & bank movement</h3></div><div id="cash-summary" class="snapshot-grid"></div></section></div>
+        </section>
+        <section id="module-view" class="module-view" hidden><div class="dash-heading"><div><span class="eyebrow" id="module-eyebrow">WORKSPACE</span><h1 id="module-title">Module</h1><p id="module-description"></p></div><button class="secondary-button" id="module-refresh">↻ Refresh</button></div><div id="module-content" class="dash-card module-content"></div></section>
       </section>
       <footer class="page-footer"><span>ERP Cloud · Development preview</span><span>Secure workspace foundation</span></footer>
     </main>
