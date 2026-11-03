@@ -189,3 +189,22 @@ Implemented on `feature/erp-foundation`:
 - Automated tests seed two separate tenant companies and verify cross-tenant master records are not returned; role tests verify owner/admin permissions and tenant membership scoping.
 
 Supported membership roles currently recognized by the role-management endpoint: owner, admin, manager, accountant, sales, and staff. Member invitations, identity provisioning, branch/warehouse-level grants, transactional APIs, write APIs, and audit/event logging are not part of this slice yet. Do not treat this as production-ready authorization until those controls and the broader security review are complete.
+
+
+## Phase 2.1 — Sales invoice API (first transaction slice)
+
+Implemented on `feature/erp-foundation`:
+- `POST /erp/sales/invoices`: creates an invoice for an active customer and active products belonging to the authenticated tenant's mapped company.
+- `GET /erp/sales/invoices`: lists invoices for the authenticated tenant's mapped company only.
+- `GET /erp/sales/invoices/{invoice_id}`: retrieves one invoice only when it belongs to the authenticated tenant's company.
+- Invoice creation is restricted to owner, admin, manager, accountant, and sales roles. All authenticated workspace members can read company invoices.
+- Invoice lines snapshot SKU, product name, HSN/SAC, unit, quantity, price, discount, and GST rate so later product-master edits do not rewrite historical line descriptions.
+- GST is calculated per line using decimal arithmetic and two-decimal half-up rounding. Intra-state tax is split equally into CGST/SGST (with any rounding remainder assigned to SGST); inter-state tax is IGST.
+- Invoice numbers are assigned after the database row receives its ID, avoiding a shared mutable counter in this initial implementation.
+- Automated tests cover GST totals, invoice persistence, cross-tenant invoice/customer isolation, invalid discount rollback, unauthenticated access, and role denial.
+
+Current boundaries:
+- This is the first API transaction slice, not a complete legally compliant invoicing workflow. It does not yet implement invoice PDF generation, e-invoice/IRN, e-way bills, credit/debit notes, numbering-series configuration, payment recording, stock deduction, accounting ledger posting, cancellation/void rules, or audit events.
+- Invoice creation currently records the invoice and its tax snapshots only; it intentionally does not mutate stock or accounting balances. Those must be implemented as coordinated transaction services with dedicated tests before operational use.
+- The existing legacy `invoices.invoice_number` column is globally unique. The generated identifier includes company ID and invoice ID to avoid collisions across companies; configurable per-branch financial-year numbering remains future work.
+- Do not treat this endpoint as production-ready tax compliance or enable public customer use until tax-rule review, accounting/stock integration, auditability, and deployment security gates are complete.
