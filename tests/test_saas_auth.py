@@ -544,3 +544,130 @@ def test_sales_invoice_requires_sales_permission_and_authentication(client_and_s
         "Authorization": f"Bearer {staff_token}"
     }, json=payload)
     assert denied.status_code == 403
+
+
+
+def _create_test_invoice(client, sessions, owner, company_id, email_prefix="pay"):
+    from decimal import Decimal
+    from app.db import Customer, Product
+    with sessions() as session:
+        customer = Customer(
+            company_id=company_id, name=f"{email_prefix} Buyer",
+            state_code="32", active=True,
+        )
+        product = Product(
+            company_id=company_id, sku=f"{email_prefix.upper()}-SKU",
+            name="Payment Test Item", selling_price=Decimal("100.00"),
+            gst_rate=Decimal("18.00"), active=True,
+        )
+        session.add_all([customer, product])
+        session.commit()
+        customer_id, product_id = customer.id, product.id
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    created = client.post("/erp/sales/invoices", headers=headers, json={
+        "customer_id": customer_id,
+        "items": [{"product_id": product_id, "quantity": "1"}],
+    })
+    assert created.status_code == 201, created.text
+    return headers, created.json()
+
+
+def test_sales_payments_update_partial_and_paid_balances(client_and_sessions):
+    from app.db import Invoice, Payment
+    client, sessions = client_and_sessions
+    owner = _register(client, "payment-flow@example.com", "Payment Flow Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Payment Flow Company")
+    headers, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"])
+    invoice_id = invoice["id"]
+    assert invoice["status"] == "issued"
+    assert invoice["balance_due"] == "118.00"
+
+    partial = client.post(f"/erp/sales/invoices/{invoice_id}/payments", headers=headers, json={
+        "amount": "50.00", "method": "UPI", "reference": "UPI-REF-001",
+    })
+    assert partial.status_code == 201, partial.text
+    body = partial.json()
+    assert body["status"] == "partially_paid"
+    assert body["amount_paid"] == "50.00"
+    assert body["balance_due"] == "68.00"
+    assert len(body["payments"]) == 1
+
+    completed = client.post(f"/erp/sales/invoices/{invoice_id}/payments", headers=headers, json={
+        "amount": "68.00", "method": "Bank transfer", "reference": "BANK-REF-001",
+    })
+    assert completed.status_code == 201, completed.text
+    body = completed.json()
+    assert body["status"] == "paid"
+    assert body["amount_paid"] == "118.00"
+    assert body["balance_due"] == "0.00"
+    assert len(body["payments"]) == 2
+
+    with sessions() as session:
+        saved = session.get(Invoice, invoice_id)
+        payments = session.query(Payment).filter(Payment.invoice_id == invoice_id).all()
+        assert saved.status == "paid"
+        assert saved.amount_paid == Decimal("118.00")
+        assert len(payments) == 2
+
+
+def test_sales_payment_rejects_overpayment_and_duplicate_reference(client_and_sessions):
+    client, sessions = client_and_sessions
+    owner = _register(client, "payment-validation@example.com", "Payment Validation Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Payment Validation Company")
+    headers, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "valid")
+    invoice_id = invoice["id"]
+
+    over = client.post(f"/erp/sales/invoices/{invoice_id}/payments", headers=headers, json={
+        "amount": "118.01", "reference": "OVER-001",
+    })
+    assert over.status_code == 422
+    first = client.post(f"/erp/sales/invoices/{invoice_id}/payments", headers=headers, json={
+        "amount": "10.00", "reference": "DUP-001",
+    })
+    assert first.status_code == 201
+    duplicate = client.post(f"/erp/sales/invoices/{invoice_id}/payments", headers=headers, json={
+        "amount": "10.00", "reference": "DUP-001",
+    })
+    assert duplicate.status_code == 409
+    with sessions() as session:
+        from app.db import Payment
+        assert session.query(Payment).filter(Payment.invoice_id == invoice_id).count() == 1
+
+
+def test_sales_payment_is_tenant_scoped_and_role_protected(client_and_sessions):
+    client, sessions = client_and_sessions
+    first = _register(client, "payment-tenant-one@example.com", "Payment Tenant One")
+    second = _register(client, "payment-tenant-two@example.com", "Payment Tenant Two")
+    first_setup = _save_unregistered_profile(client, first["access_token"], "Payment Company One")
+    second_setup = _save_unregistered_profile(client, second["access_token"], "Payment Company Two")
+    first_headers, invoice = _create_test_invoice(client, sessions, first, first_setup["company"]["id"], "tenant1")
+    second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+
+    hidden = client.post(f"/erp/sales/invoices/{invoice['id']}/payments", headers=second_headers, json={
+        "amount": "1.00",
+    })
+    assert hidden.status_code == 404
+    assert client.get(f"/erp/sales/invoices/{invoice['id']}", headers=second_headers).status_code == 404
+
+    with sessions() as session:
+        staff = SaaSIdentity(
+            email="payment-staff@example.com", full_name="Payment Staff",
+            password_hash="unused-test-hash", active=True,
+        )
+        session.add(staff)
+        session.flush()
+        session.add(SaaSTenantMembership(
+            tenant_id=first["tenant"]["id"], identity_id=staff.id,
+            role="staff", active=True,
+        ))
+        staff_token = create_access_token(staff.id, first["tenant"]["id"])
+        session.commit()
+    denied = client.post(
+        f"/erp/sales/invoices/{invoice['id']}/payments",
+        headers={"Authorization": f"Bearer {staff_token}"},
+        json={"amount": "1.00"},
+    )
+    assert denied.status_code == 403
+    assert client.post(
+        f"/erp/sales/invoices/{invoice['id']}/payments", json={"amount": "1.00"}
+    ).status_code == 401
