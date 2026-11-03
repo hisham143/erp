@@ -330,8 +330,6 @@ def _save_unregistered_profile(client, token, trade_name):
 
 def test_erp_master_read_apis_are_company_and_tenant_scoped(client_and_sessions):
     from app.db import Customer, Product, Supplier
-    from decimal import Decimal
-
     client, sessions = client_and_sessions
     first = _register(client, "scope-one@example.com", "Scope Workspace One")
     second = _register(client, "scope-two@example.com", "Scope Workspace Two")
