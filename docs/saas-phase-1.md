@@ -245,3 +245,27 @@ Implemented on `feature/erp-foundation`:
 The API applies SQLAlchemy row-level `FOR UPDATE` locks to product and warehouse stock rows. PostgreSQL enforces these locks; SQLite ignores them, so the local SQLite test suite does not prove concurrent oversell protection. Before production launch, add PostgreSQL integration tests and a concurrency test using atomic conditional stock updates or an appropriately isolated transaction strategy. No schema migration is required for this slice because the existing `product_stock`, `stock_movements`, and `audit_logs` tables are reused.
 
 Automated tests cover stock deduction, insufficient-stock rollback, cancellation restoration/idempotency, paid-invoice cancellation rejection, tenant isolation, and role restrictions. Run the complete test suite locally before treating this phase as verified.
+
+
+## Phase 2.4 — Purchase bills, stock inward, supplier payments and cancellation
+
+Implemented on `feature/erp-foundation`:
+- `POST /erp/purchases/bills`: creates a received purchase bill for an active supplier and active products in the authenticated tenant's mapped company.
+- `GET /erp/purchases/bills` and `GET /erp/purchases/bills/{purchase_id}`: list and retrieve company-scoped purchase bills.
+- Purchase lines snapshot SKU, description, HSN/SAC, quantity, unit cost, discount and GST amounts.
+- GST uses decimal arithmetic and half-up rounding; intra-state purchase tax is split into CGST/SGST and interstate tax is IGST, using company and supplier state codes.
+- Purchase receipt increments the mapped warehouse's `ProductStock`, synchronizes legacy `Product.stock_qty` for the current single-warehouse compatibility bridge, writes `StockMovement` entries and an `AuditLog` event atomically.
+- `POST /erp/purchases/bills/{purchase_id}/payments`: records supplier payments, updates amount paid/balance, rejects overpayment and repeated non-empty references.
+- `POST /erp/purchases/bills/{purchase_id}/cancel`: reverses received quantities with negative stock movements and audit logging. Cancellation is blocked when any supplier payment exists, when the purchase is already cancelled, or when available stock is below the quantity being reversed.
+- Purchase creation and supplier payment/cancellation are restricted to owner, admin, manager and accountant roles. Reads are authenticated and tenant/company scoped.
+- Migration `5d8a2c7f4e91` adds purchase CGST/SGST/IGST totals, lifecycle status and per-line discount/tax split fields. Existing purchase records retain zero tax-split defaults and a `received` status; no existing business records are deleted or rewritten.
+
+### Phase 2.4 boundaries
+
+- Supplier invoice number is stored as supplied; duplicate supplier invoice detection is not yet enforced.
+- This slice does not post double-entry accounting journals, calculate ITC eligibility/reversals, support debit/credit notes, purchase returns, landed cost, batch/serial/expiry inventory, supplier advances, refunds, or payment reversals.
+- The stock compatibility field `Product.stock_qty` is still synchronized to the currently mapped warehouse only. It is not a multi-warehouse aggregate.
+- SQLite ignores row-level `FOR UPDATE`; concurrent stock receipt/cancellation and PostgreSQL transaction behavior require dedicated PostgreSQL integration/concurrency tests before production.
+- GST values are based on configured product rates and state codes. This is not a complete GST compliance engine or a substitute for professional tax-rule review.
+
+Automated tests added for intra-state GST totals, stock inward, stock movement/audit records, supplier payment balance and duplicate guards, cancellation restoration/idempotency, paid-purchase cancellation denial, tenant isolation, and purchase-role restrictions. Run the full suite and Alembic checks locally before treating this phase as verified.
