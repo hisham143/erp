@@ -313,3 +313,110 @@ def test_business_onboarding_creates_operational_erp_hierarchy_once_and_tenant_s
     second_saved = client.put("/onboarding/business", json=payload, headers=second_headers)
     assert second_saved.status_code == 200
     assert second_saved.json()["erp_setup"]["company"]["id"] != setup["company"]["id"]
+
+
+def _save_unregistered_profile(client, token, trade_name):
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.put("/onboarding/business", headers=headers, json={
+        "trade_name": trade_name,
+        "state_code": "32",
+        "gst_registration_type": "unregistered",
+        "first_branch_name": "Main Branch",
+        "first_warehouse_name": "Main Warehouse",
+    })
+    assert response.status_code == 200
+    return response.json()["erp_setup"]
+
+
+def test_erp_master_read_apis_are_company_and_tenant_scoped(client_and_sessions):
+    from app.db import Customer, Product, Supplier
+    from decimal import Decimal
+
+    client, sessions = client_and_sessions
+    first = _register(client, "scope-one@example.com", "Scope Workspace One")
+    second = _register(client, "scope-two@example.com", "Scope Workspace Two")
+    first_setup = _save_unregistered_profile(client, first["access_token"], "First Company")
+    second_setup = _save_unregistered_profile(client, second["access_token"], "Second Company")
+
+    with sessions() as session:
+        session.add_all([
+            Customer(company_id=first_setup["company"]["id"], name="First Customer"),
+            Customer(company_id=second_setup["company"]["id"], name="Second Customer"),
+            Product(company_id=first_setup["company"]["id"], sku="FIRST-SKU", name="First Product"),
+            Product(company_id=second_setup["company"]["id"], sku="SECOND-SKU", name="Second Product"),
+            Supplier(company_id=first_setup["company"]["id"], name="First Supplier"),
+            Supplier(company_id=second_setup["company"]["id"], name="Second Supplier"),
+        ])
+        session.commit()
+
+    first_headers = {"Authorization": f"Bearer {first['access_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+    assert client.get("/erp/context", headers=first_headers).json()["company"]["id"] == first_setup["company"]["id"]
+    for endpoint, expected in [
+        ("/erp/customers", "First Customer"),
+        ("/erp/products", "First Product"),
+        ("/erp/suppliers", "First Supplier"),
+    ]:
+        response = client.get(endpoint, headers=first_headers)
+        assert response.status_code == 200
+        names = [item.get("name") for item in response.json()["items"]]
+        assert expected in names
+        assert not any(name and name.startswith("Second ") for name in names)
+
+    for endpoint in ["/erp/context", "/erp/customers", "/erp/products", "/erp/suppliers"]:
+        response = client.get(endpoint, headers=second_headers)
+        assert response.status_code == 200
+        body = response.json()
+        if endpoint == "/erp/context":
+            assert body["company"]["id"] == second_setup["company"]["id"]
+        else:
+            assert not any(item.get("name", "").startswith("First ") for item in body["items"])
+
+
+def test_workspace_member_roles_are_owner_managed_and_tenant_scoped(client_and_sessions):
+    client, sessions = client_and_sessions
+    owner = _register(client, "role-owner@example.com", "Role Workspace")
+    other = _register(client, "role-other@example.com", "Other Role Workspace")
+    with sessions() as session:
+        staff = SaaSIdentity(
+            email="staff-role@example.com",
+            full_name="Workspace Staff",
+            password_hash="unused-test-hash",
+            active=True,
+        )
+        session.add(staff)
+        session.flush()
+        staff_id = staff.id
+        session.add(SaaSTenantMembership(
+            tenant_id=owner["tenant"]["id"], identity_id=staff.id,
+            role="staff", active=True,
+        ))
+        session.commit()
+
+    owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    listed = client.get("/workspace/members", headers=owner_headers)
+    assert listed.status_code == 200
+    assert any(item["identity_id"] == staff_id for item in listed.json()["items"])
+
+    changed = client.patch(
+        f"/workspace/members/{staff_id}/role",
+        json={"role": "sales"}, headers=owner_headers,
+    )
+    assert changed.status_code == 200
+    assert changed.json()["role"] == "sales"
+
+    assert client.patch(
+        f"/workspace/members/{staff_id}/role",
+        json={"role": "admin"}, headers=other_headers,
+    ).status_code == 404
+
+    with sessions() as session:
+        owner_membership = session.scalar(select(SaaSTenantMembership).where(
+            SaaSTenantMembership.tenant_id == owner["tenant"]["id"],
+            SaaSTenantMembership.identity_id == owner["user"]["id"],
+        ))
+        owner_membership.role = "staff"
+        session.commit()
+    forbidden = client.get("/workspace/members", headers=owner_headers)
+    assert forbidden.status_code == 403
