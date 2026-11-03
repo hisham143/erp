@@ -573,6 +573,7 @@ def _create_test_invoice(client, sessions, owner, company_id, email_prefix="pay"
 
 
 def test_sales_payments_update_partial_and_paid_balances(client_and_sessions):
+    from decimal import Decimal
     from app.db import Invoice, Payment
     client, sessions = client_and_sessions
     owner = _register(client, "payment-flow@example.com", "Payment Flow Workspace")
