@@ -23,7 +23,7 @@ from app.db import (
     SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
     SaaSTenantMembership, Warehouse, Customer, Product, ProductStock, StockMovement,
-    AuditLog, Supplier, Invoice, InvoiceItem, Payment,
+    AuditLog, Supplier, Invoice, InvoiceItem, Payment, Purchase, PurchaseItem, SupplierPayment,
     hash_password, verify_password,
 )
 from app.saas.security import (
@@ -69,6 +69,27 @@ class SalesInvoiceRequest(BaseModel):
     invoice_date: date | None = None
     place_of_supply_state_code: str | None = Field(default=None, min_length=2, max_length=2)
     items: list[SalesInvoiceItemRequest] = Field(min_length=1, max_length=200)
+
+
+class PurchaseBillItemRequest(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
+    unit_cost: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+
+
+class PurchaseBillRequest(BaseModel):
+    supplier_id: int = Field(gt=0)
+    supplier_invoice_number: str = Field(default="", max_length=80)
+    purchase_date: date | None = None
+    items: list[PurchaseBillItemRequest] = Field(min_length=1, max_length=200)
+
+
+class SupplierPaymentRequest(BaseModel):
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    method: str = Field(default="Bank transfer", min_length=2, max_length=30)
+    reference: str = Field(default="", max_length=100)
+    paid_at: datetime | None = None
 
 
 class SalesPaymentRequest(BaseModel):
@@ -971,6 +992,305 @@ def get_sales_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Sales invoice not found.")
     return _invoice_payload(invoice)
+
+
+
+def _purchase_payload(purchase: Purchase) -> dict:
+    return {
+        "id": purchase.id,
+        "purchase_number": purchase.purchase_number,
+        "supplier_invoice_number": purchase.supplier_invoice_number,
+        "purchase_date": purchase.purchase_date.date().isoformat(),
+        "supplier_id": purchase.supplier_id,
+        "taxable_total": str(purchase.taxable_total),
+        "cgst_total": str(purchase.cgst_total),
+        "sgst_total": str(purchase.sgst_total),
+        "igst_total": str(purchase.igst_total),
+        "tax_total": str(purchase.tax_total),
+        "grand_total": str(purchase.grand_total),
+        "amount_paid": str(purchase.amount_paid),
+        "balance_due": str(_money(Decimal(purchase.grand_total) - Decimal(purchase.amount_paid))),
+        "status": purchase.status,
+        "payments": [{
+            "id": p.id, "amount": str(p.amount), "method": p.method,
+            "reference": p.reference, "paid_at": p.paid_at.isoformat(),
+        } for p in purchase.payments],
+        "items": [{
+            "id": item.id, "product_id": item.product_id,
+            "sku": item.sku_snapshot, "description": item.description_snapshot,
+            "hsn_sac": item.hsn_sac_snapshot,
+            "quantity": str(item.quantity), "unit_cost": str(item.unit_cost),
+            "discount_amount": str(item.discount_amount),
+            "gst_rate": str(item.gst_rate_snapshot),
+            "taxable_value": str(item.taxable_value),
+            "cgst_amount": str(item.cgst_amount),
+            "sgst_amount": str(item.sgst_amount),
+            "igst_amount": str(item.igst_amount),
+            "tax_amount": str(item.tax_amount), "line_total": str(item.line_total),
+        } for item in purchase.items],
+    }
+
+
+@app.post("/erp/purchases/bills", status_code=status.HTTP_201_CREATED, tags=["purchases"])
+def create_purchase_bill(
+    payload: PurchaseBillRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    supplier = session.scalar(select(Supplier).where(
+        Supplier.id == payload.supplier_id,
+        Supplier.company_id == linked.company_id,
+        Supplier.active.is_(True),
+    ))
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Active supplier not found in this workspace.")
+    company = session.get(Company, linked.company_id)
+    seller_state = (company.state_code or "").strip()
+    supplier_state = (supplier.state_code or "").strip()
+    if not re.fullmatch(r"[0-9]{2}", seller_state) or not re.fullmatch(r"[0-9]{2}", supplier_state):
+        raise HTTPException(status_code=409, detail="Company and supplier state codes must be configured.")
+    interstate = seller_state != supplier_state
+    purchase = Purchase(
+        company_id=linked.company_id, branch_id=linked.branch_id,
+        warehouse_id=linked.warehouse_id, supplier_id=supplier.id,
+        purchase_number=f"PENDING-{uuid.uuid4().hex}",
+        supplier_invoice_number=payload.supplier_invoice_number.strip(),
+        purchase_date=datetime.combine(payload.purchase_date or date.today(), time.min),
+        status="received", created_by=membership["email"][:80],
+    )
+    taxable_total = cgst_total = sgst_total = igst_total = Decimal("0")
+    try:
+        for requested in payload.items:
+            product = session.scalar(select(Product).where(
+                Product.id == requested.product_id,
+                Product.company_id == linked.company_id,
+                Product.active.is_(True),
+            ))
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Active product {requested.product_id} not found in this workspace.")
+            quantity = Decimal(requested.quantity)
+            unit_cost = Decimal(requested.unit_cost)
+            discount = Decimal(requested.discount_amount)
+            gross = _money(quantity * unit_cost)
+            if discount > gross:
+                raise HTTPException(status_code=422, detail="Discount cannot exceed the line gross amount.")
+            taxable = _money(gross - discount)
+            rate = Decimal(product.gst_rate)
+            if rate < 0 or rate > 100:
+                raise HTTPException(status_code=409, detail=f"Product {product.id} has an invalid GST rate.")
+            tax = _money(taxable * rate / Decimal("100"))
+            cgst = sgst = igst = Decimal("0.00")
+            if interstate:
+                igst = tax
+            else:
+                cgst = _money(tax / Decimal("2"))
+                sgst = tax - cgst
+            purchase.items.append(PurchaseItem(
+                product_id=product.id, sku_snapshot=product.sku,
+                description_snapshot=product.name, hsn_sac_snapshot=product.hsn_sac,
+                quantity=quantity, unit_cost=unit_cost, discount_amount=discount,
+                gst_rate_snapshot=rate, taxable_value=taxable,
+                cgst_amount=cgst, sgst_amount=sgst, igst_amount=igst,
+                tax_amount=tax, line_total=taxable + tax,
+            ))
+            taxable_total += taxable
+            cgst_total += cgst
+            sgst_total += sgst
+            igst_total += igst
+
+        quantities: dict[int, Decimal] = {}
+        for line in purchase.items:
+            quantities[line.product_id] = quantities.get(line.product_id, Decimal("0")) + Decimal(line.quantity)
+        for product_id, received_qty in quantities.items():
+            product = session.scalar(select(Product).where(
+                Product.id == product_id, Product.company_id == linked.company_id
+            ).with_for_update())
+            stock = session.scalar(select(ProductStock).where(
+                ProductStock.company_id == linked.company_id,
+                ProductStock.product_id == product_id,
+                ProductStock.warehouse_id == linked.warehouse_id,
+            ).with_for_update())
+            if stock is None:
+                stock = ProductStock(
+                    company_id=linked.company_id, product_id=product_id,
+                    warehouse_id=linked.warehouse_id,
+                    quantity=Decimal(product.stock_qty or 0),
+                    reorder_level=Decimal(product.reorder_level or 0),
+                )
+                session.add(stock)
+                session.flush()
+            stock.quantity = Decimal(stock.quantity or 0) + received_qty
+            product.stock_qty = stock.quantity
+
+        purchase.taxable_total = _money(taxable_total)
+        purchase.cgst_total = _money(cgst_total)
+        purchase.sgst_total = _money(sgst_total)
+        purchase.igst_total = _money(igst_total)
+        purchase.tax_total = _money(cgst_total + sgst_total + igst_total)
+        purchase.grand_total = _money(taxable_total + purchase.tax_total)
+        session.add(purchase)
+        session.flush()
+        purchase.purchase_number = f"PUR-{linked.company_id}-{purchase.purchase_date:%Y%m%d}-{purchase.id}"
+        for product_id, received_qty in quantities.items():
+            session.add(StockMovement(
+                company_id=linked.company_id, branch_id=linked.branch_id,
+                warehouse_id=linked.warehouse_id, product_id=product_id,
+                quantity_delta=received_qty, reason="purchase_received",
+                reference=purchase.purchase_number, created_by=membership["email"][:80],
+            ))
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="purchase_bill_created", entity_type="Purchase",
+            entity_id=str(purchase.id),
+            details=json.dumps({"purchase_number": purchase.purchase_number, "stock_received": {str(k): str(v) for k, v in quantities.items()}}),
+        ))
+        session.commit()
+        session.refresh(purchase)
+        return _purchase_payload(purchase)
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Purchase bill could not be saved.") from exc
+
+
+@app.get("/erp/purchases/bills", tags=["purchases"])
+def list_purchase_bills(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = session.scalars(select(Purchase).where(
+        Purchase.company_id == linked.company_id
+    ).order_by(Purchase.purchase_date.desc(), Purchase.id.desc())).all()
+    return {"items": [_purchase_payload(row) for row in rows]}
+
+
+@app.get("/erp/purchases/bills/{purchase_id}", tags=["purchases"])
+def get_purchase_bill(
+    purchase_id: int,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    purchase = session.scalar(select(Purchase).where(
+        Purchase.id == purchase_id, Purchase.company_id == linked.company_id
+    ))
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase bill not found.")
+    return _purchase_payload(purchase)
+
+
+@app.post("/erp/purchases/bills/{purchase_id}/payments", status_code=status.HTTP_201_CREATED, tags=["purchases"])
+def record_supplier_payment(
+    purchase_id: int,
+    payload: SupplierPaymentRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    purchase = session.scalar(select(Purchase).where(
+        Purchase.id == purchase_id, Purchase.company_id == linked.company_id
+    ).with_for_update())
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase bill not found.")
+    if purchase.status != "received":
+        raise HTTPException(status_code=409, detail="Payments can only be recorded against received purchases.")
+    balance = _money(Decimal(purchase.grand_total) - Decimal(purchase.amount_paid))
+    amount = _money(Decimal(payload.amount))
+    if amount > balance:
+        raise HTTPException(status_code=422, detail=f"Payment exceeds outstanding balance of {balance}.")
+    reference = payload.reference.strip()
+    if reference and session.scalar(select(SupplierPayment.id).where(
+        SupplierPayment.purchase_id == purchase.id,
+        SupplierPayment.reference == reference,
+    )):
+        raise HTTPException(status_code=409, detail="This payment reference already exists for the purchase.")
+    try:
+        session.add(SupplierPayment(
+            company_id=linked.company_id, purchase_id=purchase.id, amount=amount,
+            method=payload.method.strip(), reference=reference,
+            paid_at=payload.paid_at or datetime.utcnow(),
+            recorded_by=membership["email"][:80],
+        ))
+        purchase.amount_paid = _money(Decimal(purchase.amount_paid or 0) + amount)
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="supplier_payment_recorded", entity_type="Purchase",
+            entity_id=str(purchase.id),
+            details=json.dumps({"amount": str(amount), "reference": reference}),
+        ))
+        session.commit()
+        session.refresh(purchase)
+        return _purchase_payload(purchase)
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Supplier payment could not be saved.") from exc
+
+
+@app.post("/erp/purchases/bills/{purchase_id}/cancel", tags=["purchases"])
+def cancel_purchase_bill(
+    purchase_id: int,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin", "manager", "accountant")
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    purchase = session.scalar(select(Purchase).where(
+        Purchase.id == purchase_id, Purchase.company_id == linked.company_id
+    ).with_for_update())
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase bill not found.")
+    if purchase.status != "received":
+        raise HTTPException(status_code=409, detail="This purchase bill cannot be cancelled.")
+    if Decimal(purchase.amount_paid or 0) != 0:
+        raise HTTPException(status_code=409, detail="This purchase has supplier payments. Reverse/refund them before cancellation.")
+    quantities: dict[int, Decimal] = {}
+    for line in purchase.items:
+        quantities[line.product_id] = quantities.get(line.product_id, Decimal("0")) + Decimal(line.quantity)
+    try:
+        for product_id, quantity in quantities.items():
+            stock = session.scalar(select(ProductStock).where(
+                ProductStock.company_id == linked.company_id,
+                ProductStock.product_id == product_id,
+                ProductStock.warehouse_id == purchase.warehouse_id,
+            ).with_for_update())
+            product = session.scalar(select(Product).where(
+                Product.id == product_id, Product.company_id == linked.company_id
+            ).with_for_update())
+            if stock is None or product is None:
+                raise HTTPException(status_code=409, detail=f"Stock record for product {product_id} is missing; cancellation was not applied.")
+            available = Decimal(stock.quantity or 0)
+            if available < quantity:
+                raise HTTPException(status_code=409, detail=f"Cannot reverse purchase: only {available} units remain in stock for product {product_id}.")
+            stock.quantity = available - quantity
+            product.stock_qty = stock.quantity
+            session.add(StockMovement(
+                company_id=linked.company_id, branch_id=purchase.branch_id,
+                warehouse_id=purchase.warehouse_id, product_id=product_id,
+                quantity_delta=-quantity, reason="purchase_cancel",
+                reference=purchase.purchase_number, created_by=membership["email"][:80],
+            ))
+        purchase.status = "cancelled"
+        session.add(AuditLog(
+            company_id=linked.company_id, username=membership["email"][:80],
+            action="purchase_bill_cancelled", entity_type="Purchase",
+            entity_id=str(purchase.id),
+            details=json.dumps({"purchase_number": purchase.purchase_number, "stock_reversed": {str(k): str(v) for k, v in quantities.items()}}),
+        ))
+        session.commit()
+        session.refresh(purchase)
+        return _purchase_payload(purchase)
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, SQLAlchemyError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="Purchase bill cancellation could not be saved.") from exc
 
 
 @app.get("/erp/customers", tags=["erp"])
