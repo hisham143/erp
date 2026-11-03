@@ -442,7 +442,7 @@ def test_sales_invoice_api_calculates_gst_and_scopes_records_to_tenant(client_an
         first_product = Product(
             company_id=first_setup["company"]["id"], sku="SALE-ONE",
             name="Widget", selling_price=Decimal("100.00"),
-            gst_rate=Decimal("18.00"), active=True,
+            gst_rate=Decimal("18.00"), stock_qty=Decimal("10.000"), active=True,
         )
         session.add_all([first_customer, second_customer, first_product])
         session.commit()
@@ -558,7 +558,7 @@ def _create_test_invoice(client, sessions, owner, company_id, email_prefix="pay"
         product = Product(
             company_id=company_id, sku=f"{email_prefix.upper()}-SKU",
             name="Payment Test Item", selling_price=Decimal("100.00"),
-            gst_rate=Decimal("18.00"), active=True,
+            gst_rate=Decimal("18.00"), stock_qty=Decimal("10.000"), active=True,
         )
         session.add_all([customer, product])
         session.commit()
@@ -672,3 +672,136 @@ def test_sales_payment_is_tenant_scoped_and_role_protected(client_and_sessions):
     assert client.post(
         f"/erp/sales/invoices/{invoice['id']}/payments", json={"amount": "1.00"}
     ).status_code == 401
+
+
+def test_sales_invoice_deducts_stock_and_writes_audit_and_movement(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Product, ProductStock, StockMovement, AuditLog
+    client, sessions = client_and_sessions
+    owner = _register(client, "stock-deduct@example.com", "Stock Deduct Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Stock Deduct Company")
+    headers, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "deduct")
+    with sessions() as session:
+        product = session.scalar(select(Product).where(Product.sku == "DEDUCT-SKU"))
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product.id))
+        movement = session.scalar(select(StockMovement).where(
+            StockMovement.reference == invoice["invoice_number"],
+            StockMovement.reason == "sales_invoice",
+        ))
+        audit = session.scalar(select(AuditLog).where(
+            AuditLog.action == "sales_invoice_created",
+            AuditLog.entity_id == str(invoice["id"]),
+        ))
+        assert stock.quantity == Decimal("9.000")
+        assert product.stock_qty == Decimal("9.000")
+        assert movement.quantity_delta == Decimal("-1.000")
+        assert audit is not None
+
+
+def test_sales_invoice_rejects_insufficient_stock_without_partial_writes(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Customer, Product, Invoice, ProductStock, StockMovement
+    client, sessions = client_and_sessions
+    owner = _register(client, "stock-short@example.com", "Stock Short Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Stock Short Company")
+    with sessions() as session:
+        customer = Customer(company_id=setup["company"]["id"], name="Buyer", state_code="32")
+        product = Product(
+            company_id=setup["company"]["id"], sku="STOCK-SHORT",
+            name="Short Stock", selling_price=Decimal("10.00"),
+            gst_rate=Decimal("0.00"), stock_qty=Decimal("0.500"),
+        )
+        session.add_all([customer, product])
+        session.commit()
+        customer_id, product_id = customer.id, product.id
+    response = client.post("/erp/sales/invoices", headers={
+        "Authorization": f"Bearer {owner['access_token']}"
+    }, json={"customer_id": customer_id, "items": [
+        {"product_id": product_id, "quantity": "1"}
+    ]})
+    assert response.status_code == 409
+    with sessions() as session:
+        assert session.scalar(select(Invoice)) is None
+        assert session.scalar(select(StockMovement)) is None
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product_id))
+        assert stock is None
+
+
+def test_sales_invoice_cancellation_restores_stock_once(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Product, ProductStock, StockMovement, AuditLog, Invoice
+    client, sessions = client_and_sessions
+    owner = _register(client, "stock-cancel@example.com", "Stock Cancel Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Stock Cancel Company")
+    headers, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "cancel")
+    invoice_id = invoice["id"]
+    cancelled = client.post(f"/erp/sales/invoices/{invoice_id}/cancel", headers=headers)
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    repeated = client.post(f"/erp/sales/invoices/{invoice_id}/cancel", headers=headers)
+    assert repeated.status_code == 409
+    with sessions() as session:
+        product = session.scalar(select(Product).where(Product.sku == "CANCEL-SKU"))
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product.id))
+        movements = session.scalars(select(StockMovement).where(
+            StockMovement.reference == invoice["invoice_number"]
+        )).all()
+        audit = session.scalar(select(AuditLog).where(
+            AuditLog.action == "sales_invoice_cancelled",
+            AuditLog.entity_id == str(invoice_id),
+        ))
+        saved = session.get(Invoice, invoice_id)
+        assert stock.quantity == Decimal("10.000")
+        assert product.stock_qty == Decimal("10.000")
+        assert len(movements) == 2
+        assert sum((Decimal(row.quantity_delta) for row in movements), Decimal("0")) == 0
+        assert saved.status == "cancelled"
+        assert audit is not None
+
+
+def test_paid_invoice_cannot_be_cancelled_and_stock_is_not_restored(client_and_sessions):
+    from decimal import Decimal
+    from app.db import Product, ProductStock, Invoice
+    client, sessions = client_and_sessions
+    owner = _register(client, "paid-cancel@example.com", "Paid Cancel Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Paid Cancel Company")
+    headers, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "paidcancel")
+    paid = client.post(f"/erp/sales/invoices/{invoice['id']}/payments", headers=headers, json={
+        "amount": "1.00", "reference": "PAY-CANCEL-1",
+    })
+    assert paid.status_code == 201
+    rejected = client.post(f"/erp/sales/invoices/{invoice['id']}/cancel", headers=headers)
+    assert rejected.status_code == 409
+    with sessions() as session:
+        product = session.scalar(select(Product).where(Product.sku == "PAIDCANCEL-SKU"))
+        stock = session.scalar(select(ProductStock).where(ProductStock.product_id == product.id))
+        saved = session.get(Invoice, invoice["id"])
+        assert stock.quantity == Decimal("9.000")
+        assert saved.status == "partially_paid"
+
+
+def test_invoice_cancellation_is_tenant_scoped_and_role_protected(client_and_sessions):
+    client, sessions = client_and_sessions
+    owner = _register(client, "cancel-owner@example.com", "Cancel Owner Workspace")
+    other = _register(client, "cancel-other@example.com", "Cancel Other Workspace")
+    setup = _save_unregistered_profile(client, owner["access_token"], "Cancel Owner Company")
+    _, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "cancelrole")
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    assert client.post(f"/erp/sales/invoices/{invoice['id']}/cancel", headers=other_headers).status_code == 404
+    with sessions() as session:
+        staff = SaaSIdentity(
+            email="cancel-staff@example.com", full_name="Cancel Staff",
+            password_hash="unused-test-hash", active=True,
+        )
+        session.add(staff)
+        session.flush()
+        session.add(SaaSTenantMembership(
+            tenant_id=owner["tenant"]["id"], identity_id=staff.id,
+            role="staff", active=True,
+        ))
+        token = create_access_token(staff.id, owner["tenant"]["id"])
+        session.commit()
+    denied = client.post(f"/erp/sales/invoices/{invoice['id']}/cancel", headers={
+        "Authorization": f"Bearer {token}"
+    })
+    assert denied.status_code == 403
