@@ -308,3 +308,74 @@ def test_operational_sales_and_purchase_endpoints_post_accounting_entries(accoun
             == sum((Decimal(line.credit) for line in entry.lines), Decimal("0"))
             for entry in entries
         )
+
+
+
+def test_financial_reports_and_journal_register_are_tenant_scoped(accounting_client):
+    headers = create_workspace(accounting_client, "Financial Reports", "financial-reports@example.com")
+    other = create_workspace(accounting_client, "Other Reports", "other-reports@example.com")
+    chart = accounting_client.get("/erp/accounting/accounts", headers=headers).json()["items"]
+    codes = {row["code"]: row["id"] for row in chart}
+    posted = accounting_client.post("/erp/accounting/journals", headers=headers, json={
+        "entry_date": "2026-11-03",
+        "narration": "November operating activity",
+        "lines": [
+            {"account_id": codes["1000"], "debit": "700.00", "credit": "0"},
+            {"account_id": codes["5200"], "debit": "300.00", "credit": "0"},
+            {"account_id": codes["4000"], "debit": "0", "credit": "1000.00"},
+        ],
+    })
+    assert posted.status_code == 201, posted.text
+
+    pnl = accounting_client.get(
+        "/erp/accounting/profit-loss?from_date=2026-11-01&to_date=2026-11-30",
+        headers=headers,
+    )
+    assert pnl.status_code == 200
+    assert pnl.json()["total_income"] == "1000.00"
+    assert pnl.json()["total_expenses"] == "300.00"
+    assert pnl.json()["net_profit"] == "700.00"
+
+    balance = accounting_client.get(
+        "/erp/accounting/balance-sheet?as_of=2026-11-30", headers=headers
+    )
+    assert balance.status_code == 200
+    assert balance.json()["total_assets"] == "700.00"
+    assert balance.json()["total_equity"] == "700.00"
+    assert balance.json()["balanced"] is True
+
+    cash = accounting_client.get(
+        "/erp/accounting/cash-flow?from_date=2026-11-01&to_date=2026-11-30",
+        headers=headers,
+    )
+    assert cash.status_code == 200
+    assert cash.json()["net_cash_bank_movement"] == "700.00"
+    assert cash.json()["report_type"] == "cash_and_bank_ledger_movement"
+
+    register = accounting_client.get(
+        "/erp/accounting/journals?from_date=2026-11-01&to_date=2026-11-30",
+        headers=headers,
+    )
+    assert register.status_code == 200
+    assert len(register.json()["items"]) == 1
+    assert register.json()["items"][0]["id"] == posted.json()["id"]
+
+    other_register = accounting_client.get("/erp/accounting/journals", headers=other)
+    assert other_register.status_code == 200
+    assert other_register.json()["items"] == []
+
+
+def test_financial_reports_reject_invalid_date_ranges(accounting_client):
+    headers = create_workspace(accounting_client, "Invalid Dates", "invalid-dates@example.com")
+    assert accounting_client.get(
+        "/erp/accounting/profit-loss?from_date=2026-12-01&to_date=2026-11-01",
+        headers=headers,
+    ).status_code == 422
+    assert accounting_client.get(
+        "/erp/accounting/cash-flow?from_date=2026-12-01&to_date=2026-11-01",
+        headers=headers,
+    ).status_code == 422
+    assert accounting_client.get(
+        "/erp/accounting/journals?from_date=2026-12-01&to_date=2026-11-01",
+        headers=headers,
+    ).status_code == 422
