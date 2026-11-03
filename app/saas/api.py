@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from app.db import (
     SessionLocal, Branch, BusinessSettings, Company, SaaSBusinessProfile,
     SaaSIdentity, SaaSRefreshSession, SaaSTenant, SaaSTenantCompany,
-    SaaSTenantMembership, Warehouse, hash_password, verify_password,
+    SaaSTenantMembership, Warehouse, Customer, Product, Supplier,
+    hash_password, verify_password,
 )
 from app.saas.security import (
     ACCESS_TOKEN_SECONDS, REFRESH_TOKEN_DAYS, create_access_token,
@@ -50,6 +51,10 @@ class LoginRequest(BaseModel):
 class RefreshRequest(BaseModel):
     refresh_token: str | None = Field(default=None, min_length=40, max_length=200)
 
+
+
+class MembershipRoleRequest(BaseModel):
+    role: str = Field(min_length=3, max_length=30)
 
 
 class BusinessOnboardingRequest(BaseModel):
@@ -517,6 +522,142 @@ def get_erp_setup(
     if not linked:
         raise HTTPException(status_code=404, detail="ERP company setup is not complete.")
     return _erp_setup_payload(session, linked)
+
+_TENANT_ROLES = {"owner", "admin", "manager", "accountant", "sales", "staff"}
+
+
+def _tenant_erp_context(session: Session, tenant_id: int) -> SaaSTenantCompany:
+    linked = session.scalar(select(SaaSTenantCompany).where(
+        SaaSTenantCompany.tenant_id == tenant_id
+    ))
+    if not linked:
+        raise HTTPException(status_code=409, detail="Complete business setup before using ERP modules.")
+    company = session.get(Company, linked.company_id)
+    branch = session.get(Branch, linked.branch_id)
+    warehouse = session.get(Warehouse, linked.warehouse_id)
+    if (
+        not company or not company.active or not branch or not branch.active
+        or not warehouse or not warehouse.active
+        or branch.company_id != company.id
+        or warehouse.company_id != company.id
+        or warehouse.branch_id != branch.id
+    ):
+        raise HTTPException(status_code=409, detail="Workspace ERP context is inactive or inconsistent.")
+    return linked
+
+
+def _require_roles(membership: dict, *roles: str) -> None:
+    if membership["role"] not in set(roles):
+        raise HTTPException(status_code=403, detail="Your workspace role cannot perform this action.")
+
+
+@app.get("/workspace/members", tags=["workspace"])
+def list_workspace_members(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner", "admin")
+    rows = session.execute(
+        select(SaaSIdentity, SaaSTenantMembership)
+        .join(SaaSTenantMembership, SaaSTenantMembership.identity_id == SaaSIdentity.id)
+        .where(SaaSTenantMembership.tenant_id == membership["tenant_id"])
+        .order_by(SaaSIdentity.full_name, SaaSIdentity.id)
+    ).all()
+    return {"items": [
+        {
+            "identity_id": identity.id,
+            "name": identity.full_name,
+            "email": identity.email,
+            "role": member.role,
+            "active": bool(identity.active and member.active),
+        }
+        for identity, member in rows
+    ]}
+
+
+@app.patch("/workspace/members/{identity_id}/role", tags=["workspace"])
+def update_workspace_member_role(
+    identity_id: int,
+    payload: MembershipRoleRequest,
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    _require_roles(membership, "owner")
+    new_role = payload.role.strip().lower()
+    if new_role not in _TENANT_ROLES - {"owner"}:
+        raise HTTPException(status_code=422, detail="Select a supported non-owner role.")
+    target = session.scalar(select(SaaSTenantMembership).where(
+        SaaSTenantMembership.tenant_id == membership["tenant_id"],
+        SaaSTenantMembership.identity_id == identity_id,
+        SaaSTenantMembership.active.is_(True),
+    ))
+    if not target:
+        raise HTTPException(status_code=404, detail="Active workspace member not found.")
+    if target.role == "owner":
+        raise HTTPException(status_code=409, detail="Owner role cannot be changed through this endpoint.")
+    target.role = new_role
+    session.commit()
+    return {"identity_id": identity_id, "role": new_role}
+
+
+@app.get("/erp/context", tags=["erp"])
+def get_current_erp_context(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    return _erp_setup_payload(session, linked)
+
+
+@app.get("/erp/customers", tags=["erp"])
+def list_erp_customers(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = session.scalars(select(Customer).where(
+        Customer.company_id == linked.company_id
+    ).order_by(Customer.name, Customer.id)).all()
+    return {"items": [{
+        "id": row.id, "name": row.name, "gstin": row.gstin,
+        "state_code": row.state_code, "phone": row.phone,
+        "email": row.email, "active": row.active,
+    } for row in rows]}
+
+
+@app.get("/erp/products", tags=["erp"])
+def list_erp_products(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = session.scalars(select(Product).where(
+        Product.company_id == linked.company_id
+    ).order_by(Product.name, Product.id)).all()
+    return {"items": [{
+        "id": row.id, "sku": row.sku, "name": row.name,
+        "hsn_sac": row.hsn_sac, "unit": row.unit,
+        "selling_price": str(row.selling_price),
+        "purchase_price": str(row.purchase_price),
+        "gst_rate": str(row.gst_rate), "active": row.active,
+    } for row in rows]}
+
+
+@app.get("/erp/suppliers", tags=["erp"])
+def list_erp_suppliers(
+    membership: dict = Depends(current_membership),
+    session: Session = Depends(get_db),
+):
+    linked = _tenant_erp_context(session, membership["tenant_id"])
+    rows = session.scalars(select(Supplier).where(
+        Supplier.company_id == linked.company_id
+    ).order_by(Supplier.name, Supplier.id)).all()
+    return {"items": [{
+        "id": row.id, "name": row.name, "gstin": row.gstin,
+        "state_code": row.state_code, "phone": row.phone,
+        "active": row.active,
+    } for row in rows]}
+
 
 @app.get("/auth/me", tags=["authentication"])
 def me(membership: dict = Depends(current_membership)):
