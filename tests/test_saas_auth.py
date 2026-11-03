@@ -785,6 +785,7 @@ def test_invoice_cancellation_is_tenant_scoped_and_role_protected(client_and_ses
     owner = _register(client, "cancel-owner@example.com", "Cancel Owner Workspace")
     other = _register(client, "cancel-other@example.com", "Cancel Other Workspace")
     setup = _save_unregistered_profile(client, owner["access_token"], "Cancel Owner Company")
+    _save_unregistered_profile(client, other["access_token"], "Cancel Other Company")
     _, invoice = _create_test_invoice(client, sessions, owner, setup["company"]["id"], "cancelrole")
     other_headers = {"Authorization": f"Bearer {other['access_token']}"}
     assert client.post(f"/erp/sales/invoices/{invoice['id']}/cancel", headers=other_headers).status_code == 404
